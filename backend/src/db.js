@@ -366,6 +366,38 @@ async function removeForeignKeyConstraints(poolInstance) {
     client.release();
   }
 }
+async function createDatabaseIfMissing(dbName) {
+  try {
+    // Reconstruct connection params from saved config
+    const cfg = databaseConfig.getConfig() || {};
+    const adminDb = cfg.adminDatabase || 'postgres';
+    const host = cfg.host || 'localhost';
+    const port = Number(cfg.port || 5432);
+    const user = cfg.user || process.env.PGUSER || 'postgres';
+    const password = cfg.password ?? process.env.PGPASSWORD ?? undefined;
+
+    const adminPool = new Pool({ host, port, user, password, database: adminDb });
+    const client = await adminPool.connect();
+    try {
+      const existsRes = await client.query('SELECT 1 FROM pg_database WHERE datname = $1', [dbName]);
+      if (existsRes.rowCount === 0) {
+        console.log(`🆕 Creating local database "${dbName}" ...`);
+        await client.query(`CREATE DATABASE ${JSON.stringify(dbName).replace(/^"|"$/g,'"')}`.replace(/\\"/g,'"')); // safe-ish
+        console.log('✅ Database created');
+      } else {
+        console.log('ℹ️  Database already exists');
+      }
+    } finally {
+      client.release();
+      await adminPool.end().catch(() => {});
+    }
+    return true;
+  } catch (e) {
+    console.error('❌ Failed to create database automatically:', e?.message || e);
+    return false;
+  }
+}
+
 async function initializeLocalDatabase(poolInstance) {
   if (!poolInstance) return true;
   try {
@@ -378,8 +410,28 @@ async function initializeLocalDatabase(poolInstance) {
   } catch (error) {
     console.error('❌ Local database connection/schema failed:', error.message);
     if (error.code === '3D000') {
-      console.error('   → Database does not exist. Please create it first in PgAdmin.');
-      console.error('   → Create a database named "whatsapp_blast" in PgAdmin and try again.');
+      // Auto-create database then retry once
+      const cfg = databaseConfig.getConfig() || {};
+      const dbName = cfg.database || (cfg.connectionString ? new URL(cfg.connectionString.replace(/^postgres(ql)?:\/\//,'postgres://')).pathname.replace(/^\//,'') : 'whatsapp_blast');
+      const created = await createDatabaseIfMissing(dbName);
+      if (created) {
+        try {
+          // Reconnect by rebuilding pool and retry schema ensure
+          await rebuildPool();
+          const p = getLocalPool();
+          if (p) {
+            await p.query('SELECT NOW()');
+            await removeForeignKeyConstraints(p);
+            await ensureLocalSchema(p);
+            console.log('🗃️  Local database schema ensured');
+            return true;
+          }
+        } catch (e2) {
+          console.error('❌ Retry after create failed:', e2?.message || e2);
+        }
+      } else {
+        console.error('   → Could not auto-create the database. Please create it manually in PgAdmin.');
+      }
     } else if (error.code === '28P01') {
       console.error('   → Authentication failed. Please check username/password.');
     } else if (error.code === 'ECONNREFUSED') {

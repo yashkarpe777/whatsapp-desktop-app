@@ -76,6 +76,32 @@ export interface DashboardStats {
 }
 
 class ApiService {
+  private refreshing: Promise<string | null> | null = null;
+
+  private async refreshToken(): Promise<string | null> {
+    if (this.refreshing) return this.refreshing;
+    this.refreshing = (async () => {
+      const token = localStorage.getItem('token');
+      if (!token) { this.refreshing = null; return null; }
+      try {
+        const res = await fetch(`${API_BASE_URL_ADMIN}/auth/refresh`, {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}` },
+        });
+        if (!res.ok) throw new Error(`Refresh failed: ${res.status}`);
+        const j = await res.json();
+        if (j?.token) localStorage.setItem('token', j.token);
+        return j?.token || null;
+      } catch {
+        try { localStorage.removeItem('token'); } catch {}
+        return null;
+      } finally {
+        this.refreshing = null;
+      }
+    })();
+    return this.refreshing;
+  }
+
   private async request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
     const isAdminPath = /^\/(coins|admin|auth)/.test(endpoint);
     const base = isAdminPath ? API_BASE_URL_ADMIN : API_BASE_URL_CORE;
@@ -106,6 +132,19 @@ class ApiService {
             if (t) detail = t;
           }
         } catch {}
+
+        // Silent refresh-and-retry on auth errors
+        if (response.status === 401 || /invalid|expired|jwt/i.test(detail)) {
+          const newTok = await this.refreshToken();
+          if (newTok) {
+            const retryCfg: RequestInit = {
+              ...config,
+              headers: { ...(config.headers as any), 'Authorization': `Bearer ${newTok}` },
+            };
+            const retryResp = await fetch(url, retryCfg);
+            if (retryResp.ok) return retryResp.json();
+          }
+        }
         throw new Error(detail);
       }
 

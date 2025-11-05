@@ -1,15 +1,10 @@
 // ProtectedRoute.tsx
 import { Navigate, Outlet } from "react-router-dom";
 
+// Allow API layer to silently refresh tokens; only check presence here
 const ProtectedRoute = () => {
   const token = localStorage.getItem("token");
-
-  if (!token) {
-    // No token → redirect to login
-    return <Navigate to="/" replace />;
-  }
-
-  // Token exists → render child routes
+  if (!token) return <Navigate to="/" replace />;
   return <Outlet />;
 };
 

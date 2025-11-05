@@ -147,7 +147,7 @@ export default function Campaigns() {
       
       // Redirect to Active Campaigns page after creation
       setTimeout(() => {
-        navigate('/app/active-campaigns');
+        navigate('/app/campaigns/active');
       }, 1500);
     } catch (error) {
       console.error('Failed to create campaign:', error);
@@ -375,11 +375,11 @@ export default function Campaigns() {
               </div>
 
               <div>
-                <Label htmlFor="video-upload">Video File</Label>
+                <Label htmlFor="video-upload">Attachment File</Label>
                 <Input
                   id="video-upload"
                   type="file"
-                  accept="video/*,image/*"
+                  accept="*/*"
                   onChange={(e) => {
                     const file = e.target.files?.[0] || null;
                     setFormData({ ...formData, videoFile: file });
@@ -646,7 +646,7 @@ className="w-full p-2 border rounded bg-background text-foreground"
               </div>
               <div>
                 <Label>Attachment (optional)</Label>
-                <Input type="file" accept="video/*,image/*" onChange={(e) => {
+                <Input type="file" accept="*/*" onChange={(e) => {
                   const file = e.target.files?.[0] || null;
                   setEditFile(file);
                   if (editPreviewUrl) URL.revokeObjectURL(editPreviewUrl);

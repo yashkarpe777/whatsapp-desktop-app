@@ -427,7 +427,7 @@ const ActiveCampaigns = () => {
             </div>
             <div className="space-y-2">
               <label className="text-sm font-medium">Attachment (optional)</label>
-              <input type="file" accept="video/*,image/*" onChange={(e) => {
+              <input type="file" accept="*/*" onChange={(e) => {
                 const file = e.target.files?.[0] || null;
                 setEditFile(file);
                 if (editPreviewUrl) URL.revokeObjectURL(editPreviewUrl);

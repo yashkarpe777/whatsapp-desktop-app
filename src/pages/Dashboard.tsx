@@ -18,7 +18,8 @@ import {
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { apiService, type DashboardStats } from "@/services/api";
-import heroImage from "@/assets/hero-dashboard.jpg";
+// Fallback hero image from public directory (avoids missing asset errors)
+const HERO_IMAGE_SRC = "/placeholder.svg";
 
 export default function Dashboard() {
   const { data: stats, isLoading, refetch, isError } = useQuery({
@@ -60,7 +61,7 @@ export default function Dashboard() {
       <div className="relative overflow-hidden rounded-2xl bg-gradient-hero">
         <div className="absolute inset-0 bg-black/20"></div>
         <img 
-          src={heroImage} 
+          src={HERO_IMAGE_SRC}
           alt="WhatsApp Blast Dashboard"
           className="absolute inset-0 w-full h-full object-cover mix-blend-overlay"
         />
