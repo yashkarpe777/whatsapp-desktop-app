@@ -1,6 +1,5 @@
 import jwt from 'jsonwebtoken';
 
-// JWT middleware with optional secondary secret for smooth rotation
 export const authenticateToken = (req, res, next) => {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];

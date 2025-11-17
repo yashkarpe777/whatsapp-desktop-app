@@ -31,9 +31,13 @@ const Login = () => {
       const res = await apiService.loginPassword(username.trim(), password);
       if (res?.token) {
         localStorage.setItem('token', res.token);
+        localStorage.setItem('loginTime', Date.now().toString()); // Track login time
       }
       // Auto-detect role from token/server; the selectedRole here is only visual
       toast({ title: "Welcome", description: `Signed in as ${res?.user?.username || username}` });
+      
+      // Small delay to ensure backend is ready
+      await new Promise(resolve => setTimeout(resolve, 500));
       navigate('/app', { replace: true });
     } catch (err: any) {
       toast({ title: "Login failed", description: err?.message || 'Invalid credentials', variant: 'destructive' });

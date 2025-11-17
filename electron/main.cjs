@@ -10,6 +10,7 @@ const crypto = require('crypto');
 
 let win = null;
 let backend = null;
+let isQuitting = false;
 let log = (msg) => {};
 let logFile = null;
 const PORT = process.env.PORT || '3000';
@@ -135,6 +136,7 @@ async function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      backgroundThrottling: false,
       preload: path.join(__dirname, 'preload.cjs'),
     },
   });
@@ -153,6 +155,14 @@ async function createWindow() {
     app.quit();
   }
 
+  win.on('close', (event) => {
+    if (!isQuitting) {
+      event.preventDefault();
+      win.hide();
+      return;
+    }
+  });
+
   win.on('closed', () => {
     win = null;
   });
@@ -161,6 +171,7 @@ async function createWindow() {
 app.on('second-instance', () => {
   if (win) {
     if (win.isMinimized()) win.restore();
+    if (!win.isVisible()) win.show();
     win.focus();
   }
 });
@@ -202,6 +213,12 @@ ipcMain.handle('backend:restart', async () => {
 
 app.whenReady().then(createWindow);
 
+app.on('before-quit', () => {
+  isQuitting = true;
+});
+
 app.on('window-all-closed', () => {
-  app.quit();
+  if (isQuitting) {
+    app.quit();
+  }
 });

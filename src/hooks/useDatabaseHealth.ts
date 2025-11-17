@@ -92,11 +92,21 @@ export function useDatabaseHealth() {
   };
 
   useEffect(() => {
-    checkHealth();
-    // Check health every 2 minutes only when authenticated (less aggressive)
-    if (!token) return;
-    const interval = setInterval(checkHealth, 120000);
-    return () => clearInterval(interval);
+    // Wait 2 seconds on initial load to let backend fully initialize
+    const initialDelay = setTimeout(() => {
+      checkHealth();
+    }, 2000);
+    
+    // Check health every 5 minutes only when authenticated (less aggressive)
+    let interval: any;
+    if (token) {
+      interval = setInterval(checkHealth, 300000); // 5 minutes
+    }
+    
+    return () => {
+      clearTimeout(initialDelay);
+      if (interval) clearInterval(interval);
+    };
   }, [token]);
 
   // Also check health when the component mounts and show modal if needed
@@ -105,8 +115,22 @@ export function useDatabaseHealth() {
       setShowSetupModal(false);
       return;
     }
+    
+    // Don't show modal for first 10 seconds after login
+    const loginTime = localStorage.getItem('loginTime');
+    if (loginTime) {
+      const timeSinceLogin = Date.now() - parseInt(loginTime);
+      if (timeSinceLogin < 10000) { // Less than 10 seconds
+        setShowSetupModal(false);
+        return;
+      }
+    }
+    
     if (health && !health.databases.local && health.status !== 'error') {
-      setShowSetupModal(true);
+      // Only show modal if not dismissed recently
+      if (!isModalDismissedRecently()) {
+        setShowSetupModal(true);
+      }
     } else if (health && health.databases.local) {
       setShowSetupModal(false);
     }

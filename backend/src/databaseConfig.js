@@ -26,7 +26,12 @@ class DatabaseConfig {
     try {
       if (fs.existsSync(this.configPath)) {
         const data = fs.readFileSync(this.configPath, 'utf8');
-        return JSON.parse(data);
+        const config = JSON.parse(data);
+        // Ensure password is always a string (PostgreSQL SASL requirement)
+        if (config && config.password !== undefined && config.password !== null) {
+          config.password = String(config.password);
+        }
+        return config;
       }
     } catch (error) {
       console.warn('Failed to load database config:', error.message);
@@ -40,6 +45,8 @@ class DatabaseConfig {
       try { fs.mkdirSync(dir, { recursive: true }); } catch {}
       const configData = {
         ...config,
+        // Ensure password is always a string (PostgreSQL SASL requirement)
+        password: config.password !== undefined && config.password !== null ? String(config.password) : '',
         updatedAt: new Date().toISOString()
       };
       fs.writeFileSync(this.configPath, JSON.stringify(configData, null, 2), 'utf8');

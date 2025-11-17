@@ -1,9 +1,16 @@
 import express from "express";
 import jwt from "jsonwebtoken";
-import nodemailer from "nodemailer";
 import { getLocalPool, renderPool, hotPool } from "../src/db.js";
 import { authenticateToken } from "../middleware/authMiddleware.js";
 import bcrypt from "bcryptjs";
+
+// Optional nodemailer import for OTP emails
+let nodemailer = null;
+try {
+  nodemailer = (await import("nodemailer")).default;
+} catch (err) {
+  console.warn('⚠️ nodemailer not available - OTP emails disabled');
+}
 
 const router = express.Router();
 
@@ -106,6 +113,7 @@ const SMTP_PORT = Number(process.env.SMTP_PORT || '587');
 const SMTP_SECURE = String(process.env.SMTP_SECURE || 'false') === 'true';
 
 function buildTransporter(host = SMTP_HOST, port = SMTP_PORT, secure = SMTP_SECURE) {
+  if (!nodemailer) throw new Error('nodemailer not available');
   const commonTimeout = {
     connectionTimeout: Number(process.env.SMTP_CONN_TIMEOUT || 15000),
     greetingTimeout: Number(process.env.SMTP_GREET_TIMEOUT || 15000),
@@ -140,6 +148,7 @@ function getSmtpConfig(profile) {
 }
 
 function buildTransporterFromConfig(cfg) {
+  if (!nodemailer) throw new Error('nodemailer not available');
   const commonTimeout = {
     connectionTimeout: Number(process.env.SMTP_CONN_TIMEOUT || 15000),
     greetingTimeout: Number(process.env.SMTP_GREET_TIMEOUT || 15000),

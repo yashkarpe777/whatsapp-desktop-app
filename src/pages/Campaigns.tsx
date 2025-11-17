@@ -138,17 +138,13 @@ export default function Campaigns() {
 
       toast({
         title: "Campaign created",
-        description: "Your campaign has been created successfully. Redirecting to Active Campaigns...",
+        description: "Your campaign has been created successfully",
       });
 
       setFormData({ title: "", message: "", videoFile: null, contactGroupId: null, messageDelaySeconds: 2 });
       setShowCreateForm(false);
+      setCreatePreviewUrl(null);
       loadCampaigns();
-      
-      // Redirect to Active Campaigns page after creation
-      setTimeout(() => {
-        navigate('/app/active-campaigns');
-      }, 1500);
     } catch (error) {
       console.error('Failed to create campaign:', error);
       toast({

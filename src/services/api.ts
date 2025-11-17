@@ -76,7 +76,7 @@ export interface DashboardStats {
 }
 
 class ApiService {
-  private async request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
+  private async request<T>(endpoint: string, options: RequestInit = {}, retries = 3): Promise<T> {
     const isAdminPath = /^\/(coins|admin|auth)/.test(endpoint);
     const base = isAdminPath ? API_BASE_URL_ADMIN : API_BASE_URL_CORE;
     const url = `${base}${endpoint}`;
@@ -91,8 +91,12 @@ class ApiService {
       ...options,
     };
 
+    // Add timeout to fetch request
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout
+
     try {
-      const response = await fetch(url, config);
+      const response = await fetch(url, { ...config, signal: controller.signal });
 
       if (!response.ok) {
         let detail = `HTTP error! status: ${response.status}`;
@@ -109,8 +113,18 @@ class ApiService {
         throw new Error(detail);
       }
 
+      clearTimeout(timeoutId);
       return await response.json();
-    } catch (error) {
+    } catch (error: any) {
+      clearTimeout(timeoutId);
+      
+      // Retry on network errors or timeouts
+      if (retries > 0 && (error.name === 'AbortError' || error.message?.includes('fetch') || error.message?.includes('network'))) {
+        console.warn(`API request failed, retrying... (${retries} attempts left)`);
+        await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1s before retry
+        return this.request<T>(endpoint, options, retries - 1);
+      }
+      
       console.error(`API request failed: ${endpoint}`, error);
       throw error;
     }
@@ -158,7 +172,7 @@ class ApiService {
   }): Promise<{ success: boolean; campaign_id?: number; message?: string }> {
     const formData = new FormData();
     formData.append('title', data.title);
-    formData.append('video', data.video_file);
+    formData.append('attachment', data.video_file); // Changed from 'video' to 'attachment' to support all file types
     formData.append('message', data.message);
     if (data.contact_group_id) {
       formData.append('contact_group_id', data.contact_group_id.toString());
@@ -269,7 +283,7 @@ class ApiService {
     const formData = new FormData();
     if (data.title) formData.append('title', data.title);
     if (data.message) formData.append('message', data.message);
-    if (data.video_file) formData.append('video', data.video_file);
+    if (data.video_file) formData.append('attachment', data.video_file); // Changed from 'video' to 'attachment'
     if (typeof data.contact_group_id === 'number') formData.append('contact_group_id', String(data.contact_group_id));
 
     const token = localStorage.getItem('token');
@@ -287,7 +301,7 @@ class ApiService {
   async rerunCampaign(id: number, data: { message?: string; video_file?: File }): Promise<{ success: boolean; message: string }> {
     const formData = new FormData();
     if (data.message !== undefined) formData.append('message', data.message);
-    if (data.video_file) formData.append('video', data.video_file);
+    if (data.video_file) formData.append('attachment', data.video_file); // Changed from 'video' to 'attachment'
 
     const token = localStorage.getItem('token');
     const response = await fetch(`${API_BASE_URL}/campaigns/${id}/rerun`, {

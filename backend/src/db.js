@@ -16,39 +16,34 @@ try {
 const { Pool } = pkg;
 
 function buildRenderPool() {
-  const useSsl = process.env.DB_SSL === "true" ? { rejectUnauthorized: false } : false;
-  const urlRaw = process.env.DATABASE_URL || "";
-  const commonPool = {
+  const useSsl = process.env.DB_SSL === "true";
+  const connectionString = process.env.DATABASE_URL;
+
+  if (!connectionString) {
+    console.warn("⚠️ No DATABASE_URL for Render pool");
+    return null;
+  }
+
+  console.log('🔄 Building Render pool with URL:', connectionString.replace(/\/\/[^:]+:[^@]+@/, '//***:***@'));
+
+  const config = {
+    connectionString,
+    ssl: useSsl ? { rejectUnauthorized: false } : false,
     keepAlive: true,
     max: Number(process.env.PGPOOL_MAX || 10),
     idleTimeoutMillis: Number(process.env.PG_IDLE_TIMEOUT_MS || 30000),
-    connectionTimeoutMillis: Number(process.env.PG_CONN_TIMEOUT_MS || 5000), // Shorter timeout for faster fallback
+    connectionTimeoutMillis: Number(process.env.PG_CONN_TIMEOUT_MS || 5000),
   };
 
-  if (urlRaw) {
-    console.log('🔄 Building Render pool with URL:', urlRaw.replace(/\/\/[^:]+:[^@]+@/, '//***:***@'));
-    try {
-      const normalized = urlRaw.replace(/^postgres(ql)?:\/\//, 'postgres://');
-      const u = new URL(normalized);
-      const cfg = {
-        host: u.hostname,
-        port: Number(u.port || 5432),
-        user: decodeURIComponent(u.username || ''),
-        password: String(decodeURIComponent(u.password || '')),
-        database: decodeURIComponent(u.pathname.replace(/^\//, '')),
-        ssl: useSsl,
-        ...commonPool,
-      };
-      console.log('✅ Render pool config:', { host: cfg.host, port: cfg.port, user: cfg.user, database: cfg.database, ssl: !!cfg.ssl });
-      return new Pool(cfg);
-    } catch (e) {
-      console.error('✗ Failed to parse RENDER DATABASE_URL:', e?.message || e);
-      console.log('🔄 Falling back to connection string format...');
-      return new Pool({ connectionString: urlRaw, ssl: useSsl, ...commonPool });
-    }
-  }
-  console.warn('⚠️ No DATABASE_URL for Render pool');
-  return null;
+  console.log('✅ Render pool config:', { 
+    ssl: config.ssl, 
+    keepAlive: config.keepAlive,
+    max: config.max,
+    idleTimeoutMillis: config.idleTimeoutMillis,
+    connectionTimeoutMillis: config.connectionTimeoutMillis
+  });
+
+  return new Pool(config);
 }
 
 function buildLocalPool() {
@@ -279,17 +274,27 @@ async function ensureLocalSchema(poolInstance) {
     `ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS coins_spent INTEGER DEFAULT 0`,
     `ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS started_at TIMESTAMP`,
     `ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS completed_at TIMESTAMP`,
+    `ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS whatsapp_session_id VARCHAR(255)`,
     `CREATE TABLE IF NOT EXISTS campaign_logs (
       id SERIAL PRIMARY KEY,
       campaign_id INTEGER REFERENCES campaigns(id) ON DELETE CASCADE,
       contact_id INTEGER REFERENCES contacts(id) ON DELETE CASCADE,
+      phone VARCHAR(20) NOT NULL DEFAULT '',
+      message TEXT,
+      media_url VARCHAR(500),
       status VARCHAR(20) DEFAULT 'pending',
       error_message TEXT,
       sent_at TIMESTAMP,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )`,
+    `ALTER TABLE campaign_logs ADD COLUMN IF NOT EXISTS phone VARCHAR(20) DEFAULT ''`,
+    `ALTER TABLE campaign_logs ADD COLUMN IF NOT EXISTS message TEXT`,
+    `ALTER TABLE campaign_logs ADD COLUMN IF NOT EXISTS media_url VARCHAR(500)`,
+    `ALTER TABLE campaign_logs ADD COLUMN IF NOT EXISTS error_message TEXT`,
+    `ALTER TABLE campaign_logs ADD COLUMN IF NOT EXISTS sent_at TIMESTAMP`,
     `CREATE INDEX IF NOT EXISTS idx_campaign_logs_campaign_id ON campaign_logs(campaign_id)`,
     `CREATE INDEX IF NOT EXISTS idx_campaign_logs_status ON campaign_logs(status)`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_campaign_logs_unique ON campaign_logs(campaign_id, contact_id)`,
     `CREATE TABLE IF NOT EXISTS settings (
       id SERIAL PRIMARY KEY,
       key VARCHAR(100) UNIQUE NOT NULL,
@@ -309,6 +314,14 @@ async function ensureLocalSchema(poolInstance) {
     )`,
     `CREATE INDEX IF NOT EXISTS idx_uploads_user_id ON uploads(user_id)`,
     `CREATE UNIQUE INDEX IF NOT EXISTS idx_uploads_stored_filename ON uploads(stored_filename)`,
+    `CREATE TABLE IF NOT EXISTS campaign_state (
+      id SERIAL PRIMARY KEY,
+      campaign_id INTEGER UNIQUE NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
+      state JSONB NOT NULL,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_campaign_state_campaign_id ON campaign_state(campaign_id)`,
     `CREATE TABLE IF NOT EXISTS cleanup_logs (
       id SERIAL PRIMARY KEY,
       operation VARCHAR(50) NOT NULL,

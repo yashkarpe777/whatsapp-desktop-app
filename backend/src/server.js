@@ -17,7 +17,8 @@ import coinsRoutes from '../routes/coinsRoutes.js';
 
 // Resume engine
 import pool, { renderPool, localPool, rebuildPool, isLocalPoolConnected, getLocalPool } from './db.js';
-import { sendCampaign } from './services/whatsappservice.js';
+import { sendCampaign, initWhatsApp } from './services/whatsappservice.js';
+import { recoverCampaigns, cleanupQueue } from './services/campaignQueue.js';
 import { runCleanup } from './services/cleanupService.js';
 
 // Resolve __dirname for ESM
@@ -167,11 +168,25 @@ app.listen(PORT, () => {
     console.log(`📁 Static files served from: ${uploadsDir}`);
   }
 
-  // Kick the resume engine shortly after startup
-  setTimeout(resumeInProgressCampaigns, 3000);
+  // Campaign recovery: resume any running campaigns after restart
+  setTimeout(async () => {
+    console.log('🔄 Starting campaign recovery...');
+    try {
+      // Don't initialize WhatsApp on startup - only when user explicitly connects
+      // This prevents browser opening automatically
+      
+      // Just recover campaign state without WhatsApp connection
+      await recoverCampaigns();
+    } catch (error) {
+      console.error('❌ Campaign recovery failed:', error.message);
+    }
+  }, 5000);
 
   // Run cleanup on startup and then daily
-  setTimeout(runCleanup, 5000);
+  setTimeout(runCleanup, 10000);
+
+  // Clean up queue periodically
+  setInterval(cleanupQueue, 24 * 60 * 60 * 1000); // Daily
 });
 
 // Lightweight crash-resume engine using Postgres advisory locks
@@ -191,35 +206,17 @@ async function tryWithPgLock(campaignId, fn) {
 }
 
 async function resumeInProgressCampaigns() {
+  // This is now handled by the queue system's recoverCampaigns()
+  // Keeping this function for backward compatibility
   try {
-    const res = await pool.query(`
-      SELECT id
-      FROM campaigns
-      WHERE status = 'running'
-        AND EXISTS (SELECT 1 FROM campaign_logs cl WHERE cl.campaign_id = campaigns.id AND cl.status = 'pending')
-      ORDER BY id ASC
-      LIMIT 10
-    `);
-    for (const row of res.rows) {
-      const id = row.id;
-      if (inflight.has(id)) continue;
-      inflight.add(id);
-      try {
-        await tryWithPgLock(id, async () => {
-          // Resume campaigns don't have auth header, will skip coin checks
-          await sendCampaign(id, '').catch(() => {});
-        });
-      } finally {
-        inflight.delete(id);
-      }
-    }
+    await recoverCampaigns();
   } catch (e) {
-    // swallow errors; will try again on next tick
+    console.warn('⚠️ Campaign recovery sweep failed:', e.message);
   }
 }
 
-// Periodic resume sweep
-setInterval(resumeInProgressCampaigns, 60 * 1000);
+// Periodic resume sweep (as backup to queue system)
+setInterval(resumeInProgressCampaigns, 5 * 60 * 1000); // Every 5 minutes
 
 // Daily cleanup at 2 AM
 setInterval(() => {
