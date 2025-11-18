@@ -1,4 +1,4 @@
-import defaultPool, { rebuildPool, isLocalPoolConnected, getLocalPool, renderPool } from "../src/db.js";
+import defaultPool, { rebuildPool, isLocalPoolConnected, getLocalPool, hostPool } from "../src/db.js";
 import { databaseConfig } from "../src/databaseConfig.js";
 import fs from 'fs';
 import path from 'path';
@@ -7,7 +7,7 @@ const { Pool } = pkg;
 
 export const getSettings = async (req, res) => {
   try {
-    const pool = getLocalPool() || renderPool || defaultPool;
+    const pool = getLocalPool() || hostPool || defaultPool;
     const keys = ['whatsapp_number', 'profile_name', 'email', 'app_icon'];
     let result;
     try {
@@ -46,7 +46,7 @@ export const getSettings = async (req, res) => {
 
 export const updateSettings = async (req, res) => {
   try {
-    const pool = getLocalPool() || renderPool || defaultPool;
+    const pool = getLocalPool() || hostPool || defaultPool;
     const userId = req.user.id;
     const { whatsapp_number, profile_name, email } = req.body;
 

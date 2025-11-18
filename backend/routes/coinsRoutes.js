@@ -1,12 +1,12 @@
 import express from 'express';
-import { renderPool } from '../src/db.js';
+import { hostPool } from '../src/db.js';
 import { authenticateToken } from '../middleware/authMiddleware.js';
 
 const router = express.Router();
-const pool = renderPool; // Coins operations always use Render DB
+const pool = hostPool; 
 router.use(authenticateToken);
 
-// Get current balance
+
 router.get('/balance', async (req, res) => {
   try {
     const userId = req.user.id;

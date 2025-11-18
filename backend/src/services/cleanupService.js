@@ -1,4 +1,4 @@
-import defaultPool, { getLocalPool, renderPool } from '../db.js';
+import defaultPool, { getLocalPool, hostPool } from '../db.js';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -7,7 +7,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 function getDb() {
-  return getLocalPool() || renderPool || defaultPool;
+  return getLocalPool() || hostPool || defaultPool;
 }
 
 function ensureDateDaysAgo(days) {

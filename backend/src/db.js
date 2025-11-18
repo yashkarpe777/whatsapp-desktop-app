@@ -15,16 +15,16 @@ try {
 
 const { Pool } = pkg;
 
-function buildRenderPool() {
+function buildHostPool() {
   const useSsl = process.env.DB_SSL === "true";
   const connectionString = process.env.DATABASE_URL;
 
   if (!connectionString) {
-    console.warn("⚠️ No DATABASE_URL for Render pool");
+    console.warn("⚠️ No DATABASE_URL for host pool");
     return null;
   }
 
-  console.log('🔄 Building Render pool with URL:', connectionString.replace(/\/\/[^:]+:[^@]+@/, '//***:***@'));
+  console.log('🔄 Building host pool with URL:', connectionString.replace(/\/\/[^:]+:[^@]+@/, '//***:***@'));
 
   const config = {
     connectionString,
@@ -35,7 +35,7 @@ function buildRenderPool() {
     connectionTimeoutMillis: Number(process.env.PG_CONN_TIMEOUT_MS || 5000),
   };
 
-  console.log('✅ Render pool config:', { 
+  console.log('✅ Host pool config:', { 
     ssl: config.ssl, 
     keepAlive: config.keepAlive,
     max: config.max,
@@ -116,10 +116,10 @@ function buildLocalPool() {
   return new Pool(cfg);
 }
 
-let renderPool = buildRenderPool();
+let hostPool = buildHostPool();
 let localPool = buildLocalPool();
 export function getActivePool() {
-  return getLocalPool() || renderPool || null;
+  return getLocalPool() || hostPool || null;
 }
 export const hotPool = {
   async query(...args) {
@@ -168,7 +168,7 @@ export const isLocalPoolConnected = async () => {
     return false;
   }
 };
-async function ensureRenderSchema(poolInstance) {
+async function ensureHostSchema(poolInstance) {
   const ddl = [
     `CREATE TABLE IF NOT EXISTS users (
       id SERIAL PRIMARY KEY,
@@ -341,16 +341,16 @@ async function ensureLocalSchema(poolInstance) {
     client.release();
   }
 }
-async function initializeRenderDatabase(poolInstance) {
+async function initializeHostDatabase(poolInstance) {
   if (!poolInstance) return true;
   try {
     await poolInstance.query('SELECT NOW()');
-    console.log('✅ Render database connected successfully');
-    await ensureRenderSchema(poolInstance);
-    console.log('🗃️  Render database schema ensured');
+    console.log('✅ Host database connected successfully');
+    await ensureHostSchema(poolInstance);
+    console.log('🗃️  Host database schema ensured');
     return true;
   } catch (error) {
-    console.error('❌ Render database connection/schema failed:', error.message);
+    console.error('❌ Host database connection/schema failed:', error.message);
     return false;
   }
 }
@@ -403,12 +403,12 @@ async function initializeLocalDatabase(poolInstance) {
   }
 }
 
-if (renderPool) {
-  renderPool.on("connect", () => {
-    console.log('🔗 Render database connection established');
+if (hostPool) {
+  hostPool.on("connect", () => {
+    console.log('🔗 Host database connection established');
   });
-  renderPool.on("error", (err) => {
-    console.error('❌ Render database pool error:', err.message);
+  hostPool.on("error", (err) => {
+    console.error('❌ Host database pool error:', err.message);
   });
 }
 
@@ -422,8 +422,8 @@ if (localPool) {
 }
 
 // Initialize on startup
-initializeRenderDatabase(renderPool).catch(() => {
-  console.warn('⚠️  Render database initialization failed - will retry when accessed');
+initializeHostDatabase(hostPool).catch(() => {
+  console.warn('⚠️  Host database initialization failed - will retry when accessed');
 });
 
 // Initialize local database with retry mechanism
@@ -450,7 +450,7 @@ initializeLocalWithRetry();
 
 export const testConnection = async () => {
   try {
-    if (renderPool) await renderPool.query('SELECT NOW()');
+    if (hostPool) await hostPool.query('SELECT NOW()');
     if (localPool) await localPool.query('SELECT NOW()');
     console.log('✅ Database connections successful');
   } catch (err) {
@@ -459,5 +459,5 @@ export const testConnection = async () => {
   }
 };
 
-export { renderPool, localPool };
-export default renderPool;
+export { hostPool, localPool };
+export default hostPool;

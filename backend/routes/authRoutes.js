@@ -1,6 +1,6 @@
 import express from "express";
 import jwt from "jsonwebtoken";
-import { getLocalPool, renderPool, hotPool } from "../src/db.js";
+import { getLocalPool, hostPool, hotPool } from "../src/db.js";
 import { authenticateToken } from "../middleware/authMiddleware.js";
 import bcrypt from "bcryptjs";
 
@@ -36,11 +36,11 @@ async function queryWithFallback(sql, params) {
   
   // Explicit selection if provided
   if (AUTH_DB === 'render') {
-    if (!renderPool) throw new Error('Render DB not configured');
+    if (!hostPool) throw new Error('Host DB not configured');
     try {
-      return await renderPool.query(sql, params);
+      return await hostPool.query(sql, params);
     } catch (e) {
-      console.error('✗ Render DB query failed (explicit mode):', e?.message);
+      console.error('✗ Host DB query failed (explicit mode):', e?.message);
       throw e;
     }
   }
@@ -64,15 +64,15 @@ async function queryWithFallback(sql, params) {
   }
 
   // Auto mode: try Render first if present, then Local, then hot
-  if (renderPool) {
+  if (hostPool) {
     try {
-      console.log('🔄 Trying Render DB for auth query...');
-      return await renderPool.query(sql, params);
+      console.log('🔄 Trying host DB for auth query...');
+      return await hostPool.query(sql, params);
     } catch (e) {
-      console.warn('⚠️ Render DB failed, trying fallback:', e?.message);
-      errors.push(`Render: ${e?.message}`);
+      console.warn('⚠️ Host DB failed, trying fallback:', e?.message);
+      errors.push(`Host: ${e?.message}`);
       if (!isTransientDbError(e)) {
-        console.error('✗ Render DB hard failure, not retrying:', e?.message);
+        console.error('✗ Host DB hard failure, not retrying:', e?.message);
         throw e; // hard failure: propagate
       }
       // transient: fall through to local

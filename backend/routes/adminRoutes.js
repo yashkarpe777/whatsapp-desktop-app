@@ -1,11 +1,11 @@
 import express from "express";
-import { renderPool } from "../src/db.js";
+import { hostPool } from "../src/db.js";
 import { authenticateToken } from "../middleware/authMiddleware.js";
 import bcrypt from "bcryptjs";
 import { getCleanupStats, runCleanup } from "../src/services/cleanupService.js";
 
 const router = express.Router();
-const pool = renderPool; // Admin operations always use Render DB
+const pool = hostPool; // Admin operations always use Host (cloud) DB
 
 // Lightweight diagnostics (no auth) to verify Render configuration
 router.get('/check', (req, res) => {

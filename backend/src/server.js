@@ -16,7 +16,7 @@ import settingsRoutes from '../routes/settingsRoutes.js';
 import coinsRoutes from '../routes/coinsRoutes.js';
 
 // Resume engine
-import pool, { renderPool, localPool, rebuildPool, isLocalPoolConnected, getLocalPool } from './db.js';
+import pool, { hostPool, localPool, rebuildPool, isLocalPoolConnected, getLocalPool } from './db.js';
 import { sendCampaign, initWhatsApp } from './services/whatsappservice.js';
 import { recoverCampaigns, cleanupQueue } from './services/campaignQueue.js';
 import { runCleanup } from './services/cleanupService.js';
@@ -74,19 +74,19 @@ app.get('/health', async (req, res) => {
       message: 'Server is running',
       service_mode: SERVICE_MODE,
       databases: {
-        render: false,
+        host: false,
         local: false
       },
       errors: []
     };
 
-    // Check Render database
-    if (renderPool) {
+    // Check Host database
+    if (hostPool) {
       try {
-        await renderPool.query('SELECT 1');
-        health.databases.render = true;
+        await hostPool.query('SELECT 1');
+        health.databases.host = true;
       } catch (error) {
-        health.errors.push(`Render DB: ${error.message}`);
+        health.errors.push(`Host DB: ${error.message}`);
       }
     }
 
@@ -108,7 +108,7 @@ app.get('/health', async (req, res) => {
 
     // Determine overall status
     if (SERVICE_MODE === 'coins-only') {
-      health.status = health.databases.render ? 'ok' : 'degraded';
+      health.status = health.databases.host ? 'ok' : 'degraded';
     } else {
       health.status = health.databases.local ? 'ok' : 'degraded';
     }
@@ -121,7 +121,7 @@ app.get('/health', async (req, res) => {
       message: 'Health check failed',
       service_mode: SERVICE_MODE,
       databases: {
-        render: false,
+        host: false,
         local: false
       },
       errors: [error.message]
