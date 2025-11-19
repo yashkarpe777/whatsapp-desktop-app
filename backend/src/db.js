@@ -13,6 +13,8 @@ try {
   dotenv.config({ override: true });
 }
 
+const disableLocalDb = String(process.env.DISABLE_LOCAL_DB || "").toLowerCase() === "true";
+
 const { Pool } = pkg;
 
 function buildHostPool() {
@@ -47,6 +49,10 @@ function buildHostPool() {
 }
 
 function buildLocalPool() {
+  if (disableLocalDb) {
+    console.log("🔒 Local database usage disabled by DISABLE_LOCAL_DB flag");
+    return null;
+  }
   const useSsl = process.env.LOCAL_DB_SSL === "true" ? { rejectUnauthorized: false } : false;
   delete process.env.PGHOST;
   delete process.env.PGPORT;
@@ -129,6 +135,10 @@ export const hotPool = {
   }
 };
 export const rebuildPool = async () => {
+  if (disableLocalDb) {
+    console.warn("⚠️  Attempted to rebuild local DB pool while DISABLE_LOCAL_DB is true");
+    throw new Error("Local database is disabled");
+  }
   console.log('🔄 Rebuilding local database connection...');
   if (localPool) {
     try {
@@ -427,26 +437,30 @@ initializeHostDatabase(hostPool).catch(() => {
 });
 
 // Initialize local database with retry mechanism
-const initializeLocalWithRetry = async (retries = 3) => {
-  for (let i = 0; i < retries; i++) {
-    try {
-      await initializeLocalDatabase(localPool);
-      console.log('✅ Local database initialized successfully');
-      return true;
-    } catch (error) {
-      console.warn(`⚠️  Local database initialization attempt ${i + 1} failed:`, error.message);
-      if (i === retries - 1) {
-        console.error('❌ All local database initialization attempts failed');
-        return false;
+if (!disableLocalDb) {
+  const initializeLocalWithRetry = async (retries = 3) => {
+    for (let i = 0; i < retries; i++) {
+      try {
+        await initializeLocalDatabase(localPool);
+        console.log('✅ Local database initialized successfully');
+        return true;
+      } catch (error) {
+        console.warn(`⚠️  Local database initialization attempt ${i + 1} failed:`, error.message);
+        if (i === retries - 1) {
+          console.error('❌ All local database initialization attempts failed');
+          return false;
+        }
+        // Wait before retry
+        await new Promise(resolve => setTimeout(resolve, 2000));
       }
-      // Wait before retry
-      await new Promise(resolve => setTimeout(resolve, 2000));
     }
-  }
-  return false;
-};
+    return false;
+  };
 
-initializeLocalWithRetry();
+  initializeLocalWithRetry();
+} else {
+  console.log('⏭️  Skipping local database initialization (disabled)');
+}
 
 export const testConnection = async () => {
   try {
@@ -458,6 +472,8 @@ export const testConnection = async () => {
     process.exit(1);
   }
 };
+
+export const isLocalDbDisabled = () => disableLocalDb;
 
 export { hostPool, localPool };
 export default hostPool;

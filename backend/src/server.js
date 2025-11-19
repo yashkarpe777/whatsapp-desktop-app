@@ -224,6 +224,6 @@ setInterval(() => {
   if (now.getHours() === 2 && now.getMinutes() === 0) {
     runCleanup().catch(console.error);
   }
-}, 60 * 1000); // Check every minute
+}, 60 * 1000); 
 
 export default app;

@@ -19,7 +19,6 @@ router.get('/balance', async (req, res) => {
   }
 });
 
-// Atomically authorize (reserve) coins for a send
 router.post('/authorize', async (req, res) => {
   const userId = req.user.id;
   const required = parseInt(req.body.required);
@@ -48,7 +47,6 @@ router.post('/authorize', async (req, res) => {
   }
 });
 
-// Refund coins (e.g., unused)
 router.post('/refund', async (req, res) => {
   const userId = req.user.id;
   const amount = parseInt(req.body.amount);
