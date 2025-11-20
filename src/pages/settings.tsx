@@ -330,37 +330,6 @@ export default function Settings() {
         </CardContent>
       </Card>
 
-      {/* WhatsApp Connection */}
-      <Card className="bg-gradient-glass border-glass-border backdrop-blur-sm">
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Phone className="w-5 h-5 text-green-500" />
-            WhatsApp Web Connection
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="flex items-center justify-between p-4 bg-muted/50 rounded-lg">
-            <div>
-              <p className="font-medium">Connection Status</p>
-              <p className="text-sm text-muted-foreground">
-                {waStatus?.ready ? `✅ Connected: ${waStatus.number || 'Unknown'}` : '❌ Not Connected'}
-              </p>
-            </div>
-            <div className="flex gap-2">
-              <Button onClick={checkWhatsAppStatus} variant="outline" size="sm">
-                🔍 Check Status
-              </Button>
-              <Button onClick={() => setShowQR(true)} variant="default" size="sm">
-                📱 Connect WhatsApp
-              </Button>
-            </div>
-          </div>
-          <p className="text-xs text-muted-foreground">
-            Connect your WhatsApp Web to send campaigns. Session will be saved automatically.
-          </p>
-        </CardContent>
-      </Card>
-
       <QRModal isOpen={showQR} onClose={() => setShowQR(false)} onReady={async () => { setShowQR(false); try { const status = await apiService.getWhatsAppStatusLight(); setWaStatus(status as any); } catch {} }} />
 
       

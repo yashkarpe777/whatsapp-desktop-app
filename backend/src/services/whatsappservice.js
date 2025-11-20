@@ -19,9 +19,110 @@ let activeNumber = null;
 let activePushName = null;
 let activeSessionId = null;
 let queueInitialized = false;
+let sessionTableEnsured = false;
+
+function getLocalAuthCandidates() {
+  const candidates = new Set();
+  if (process.env.WHATSAPP_DATA_PATH) {
+    candidates.add(path.resolve(process.env.WHATSAPP_DATA_PATH));
+  }
+  candidates.add(path.resolve(process.cwd(), '.wwebjs_auth'));
+  candidates.add(path.resolve(__dirname, '..', '..', '.wwebjs_auth'));
+  return Array.from(candidates);
+}
+
+async function pathExists(targetPath) {
+  try {
+    await fs.promises.access(targetPath, fs.constants.F_OK);
+    return true;
+  } catch (err) {
+    if (err?.code === 'ENOENT') return false;
+    throw err;
+  }
+}
+
+async function removeDirectoryWithRetries(targetPath, { maxAttempts = 5, delayMs = 750 } = {}) {
+  const normalizedPath = path.resolve(targetPath);
+  const exists = await pathExists(normalizedPath).catch((err) => {
+    console.warn(`⚠️ Failed to access ${normalizedPath}:`, err?.message || err);
+    return false;
+  });
+
+  const outcome = {
+    path: normalizedPath,
+    exists,
+    removed: false,
+    attempts: 0,
+    soft: false,
+    error: null,
+  };
+
+  if (!exists) {
+    return outcome;
+  }
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    outcome.attempts = attempt;
+    try {
+      await fs.promises.rm(normalizedPath, { recursive: true, force: true });
+      outcome.removed = true;
+      return outcome;
+    } catch (error) {
+      const code = error?.code;
+      if (code === 'ENOENT') {
+        // Path disappeared between attempts – treat as removed
+        outcome.removed = true;
+        return outcome;
+      }
+
+      const isSoft = code === 'EBUSY' || code === 'EPERM';
+      outcome.soft = outcome.soft || isSoft;
+      outcome.error = error;
+
+      if (!isSoft || attempt === maxAttempts) {
+        return outcome;
+      }
+
+      const backoff = delayMs * attempt;
+      console.warn(`⚠️ ${code} removing ${normalizedPath}. Retrying in ${backoff}ms (attempt ${attempt}/${maxAttempts})`);
+      await new Promise((resolve) => setTimeout(resolve, backoff));
+    }
+  }
+
+  return outcome;
+}
 
 function getDb() {
   return hotPool;
+}
+
+async function ensureSessionTable() {
+  if (sessionTableEnsured) return true;
+  const ddlStatements = [
+    `CREATE TABLE IF NOT EXISTS whatsapp_sessions (
+      id SERIAL PRIMARY KEY,
+      session_id VARCHAR(100) UNIQUE NOT NULL,
+      phone_number VARCHAR(20),
+      push_name VARCHAR(255),
+      is_active BOOLEAN DEFAULT TRUE,
+      last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_whatsapp_sessions_session_id ON whatsapp_sessions(session_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_whatsapp_sessions_active ON whatsapp_sessions(is_active)`
+  ];
+
+  try {
+    for (const stmt of ddlStatements) {
+      await hotPool.query(stmt);
+    }
+    sessionTableEnsured = true;
+    console.log('✅ whatsapp_sessions table ensured');
+    return true;
+  } catch (error) {
+    console.warn('⚠️ Failed to ensure whatsapp_sessions table:', error.message);
+    return false;
+  }
 }
 
 async function initWhatsApp(_retry = false) {
@@ -121,19 +222,35 @@ async function initWhatsApp(_retry = false) {
       }
     });
 
-    client.on('disconnected', async () => {
-      console.log('❌ WhatsApp client disconnected');
+    client.on('disconnected', async (reason) => {
+      console.log(`❌ WhatsApp client disconnected. Reason: ${reason}`);
+      console.log('⚠️  Disconnected, but keeping session active for potential reconnection');
+      
+      // Don't destroy the client immediately to allow for reconnection
+      client = null;
       isReady = false;
-      qrCode = null;
-      activeNumber = null;
-      activePushName = null;
-      activeSessionId = null;
+      isInitializing = false;
+      
+      // Try to reconnect after a delay
+      console.log('🔄 Attempting to reconnect in 5 seconds...');
+      setTimeout(() => {
+        console.log('🔄 Attempting to reconnect...');
+        initWhatsApp().catch(err => {
+          console.error('❌ Reconnection failed:', err);
+        });
+      }, 5000);
+      
+      // Keep the active session info to allow for reconnection
+      // activeNumber and activeSessionId are kept to maintain session state
       isInitializing = false;
       queueInitialized = false;
 
-      // Mark session as inactive
-      if (activeSessionId) {
-        await markSessionInactive(activeSessionId);
+      if (previousSession) {
+        try {
+          await markSessionInactive(previousSession);
+        } catch (err) {
+          console.warn('⚠️ Failed to mark session inactive on disconnect:', err?.message || err);
+        }
       }
     });
 
@@ -165,6 +282,91 @@ async function waitForReady(timeoutMs = 30000) {
   return isReady;
 }
 
+async function clearLocalAuthProfile(options = {}) {
+  const wasReady = isReady;
+  const candidates = getLocalAuthCandidates();
+  const results = [];
+
+  try {
+    if (client) {
+      await logoutWhatsApp();
+    }
+  } catch (err) {
+    if (/EBUSY|EPERM/i.test(err?.message || '')) {
+      console.warn('⚠️ WhatsApp client busy during logout; continuing with cleanup.');
+    } else {
+      console.warn('⚠️ Failed to stop WhatsApp client before profile cleanup:', err?.message || err);
+    }
+  }
+
+  for (const candidate of candidates) {
+    try {
+      const outcome = await removeDirectoryWithRetries(candidate, options);
+      results.push(outcome);
+    } catch (err) {
+      results.push({
+        path: path.resolve(candidate),
+        exists: true,
+        removed: false,
+        attempts: 1,
+        soft: false,
+        error: err,
+      });
+    }
+  }
+
+  const removedAny = results.some((r) => r.removed);
+  const existedAny = results.some((r) => r.exists);
+  const failures = results.filter((r) => r.error);
+  const softFailure = failures.length > 0 && failures.every((f) => f.soft);
+  const sessionRestored = !removedAny && wasReady && (softFailure || failures.length === 0);
+
+  if (sessionRestored) {
+    try {
+      await ensureClientReady();
+      console.log('✅ WhatsApp session restored after cleanup attempt');
+    } catch (err) {
+      console.warn('⚠️ Failed to restore WhatsApp session after cleanup:', err?.message || err);
+    }
+  }
+
+  if (removedAny) {
+    return {
+      success: true,
+      requiresReconnect: true,
+      message: 'Profile cleared. Scan the QR code again to reconnect.',
+      results,
+    };
+  }
+
+  if (!existedAny) {
+    return {
+      success: true,
+      requiresReconnect: false,
+      message: 'No profile data found. You can connect now.',
+      results,
+    };
+  }
+
+  if (softFailure) {
+    return {
+      success: false,
+      softFailure: true,
+      requiresReconnect: false,
+      message: 'Profile files are currently in use. Close any WhatsApp instances and try again.',
+      results,
+    };
+  }
+
+  return {
+    success: false,
+    softFailure: false,
+    requiresReconnect: false,
+    message: 'Failed to clear profile data. Check logs for details.',
+    results,
+  };
+}
+
 async function ensureClientReady() {
   if (isReady) return true;
   await initWhatsApp();
@@ -176,7 +378,13 @@ async function ensureClientReady() {
 async function recoverClient() {
   try {
     if (client) {
-      try { await client.destroy(); } catch (_) {}
+      try {
+        await client.destroy();
+      } catch (err) {
+        if (!/EBUSY|EPERM/i.test(err?.message || '')) {
+          console.warn('⚠️ Destroy client failed:', err?.message || err);
+        }
+      }
     }
   } catch (_) {}
   client = null;
@@ -210,6 +418,24 @@ async function saveSessionInfo(sessionId, phoneNumber, pushName) {
     );
     console.log('✅ Session info saved:', sessionId);
   } catch (error) {
+    if (error?.code === '42P01') {
+      const ensured = await ensureSessionTable();
+      if (ensured) {
+        try {
+          await hotPool.query(
+            `INSERT INTO whatsapp_sessions (session_id, phone_number, push_name, is_active, last_seen)
+             VALUES ($1, $2, $3, true, CURRENT_TIMESTAMP)
+             ON CONFLICT (session_id)
+             DO UPDATE SET phone_number = $2, push_name = $3, is_active = true, last_seen = CURRENT_TIMESTAMP`,
+            [sessionId, phoneNumber, pushName]
+          );
+          console.log('✅ Session info saved after ensuring table:', sessionId);
+          return;
+        } catch (retryErr) {
+          console.warn('⚠️ Retry save session info failed:', retryErr.message);
+        }
+      }
+    }
     console.warn('⚠️ Could not save session info:', error.message);
   }
 }
@@ -222,6 +448,21 @@ async function markSessionInactive(sessionId) {
     );
     console.log('✅ Session marked inactive:', sessionId);
   } catch (error) {
+    if (error?.code === '42P01') {
+      const ensured = await ensureSessionTable();
+      if (ensured) {
+        try {
+          await hotPool.query(
+            `UPDATE whatsapp_sessions SET is_active = false, last_seen = CURRENT_TIMESTAMP WHERE session_id = $1`,
+            [sessionId]
+          );
+          console.log('✅ Session marked inactive after ensuring table:', sessionId);
+          return;
+        } catch (retryErr) {
+          console.warn('⚠️ Retry mark session inactive failed:', retryErr.message);
+        }
+      }
+    }
     console.warn('⚠️ Could not mark session inactive:', error.message);
   }
 }
@@ -252,17 +493,58 @@ export async function sendCampaign(campaignId, authHeader = '') {
 }
 
 async function logoutWhatsApp() {
-  if (client) {
-    try { await client.logout(); } catch (_) {}
-    try { await client.destroy(); } catch (_) {}
+  if (!client && !activeSessionId) {
+    return { success: false, message: 'No active WhatsApp session to log out from' };
   }
+  
+  const currentClient = client;
+  const sessionToLogout = activeSessionId;
+  
+  // Clear local state first
   client = null;
   isReady = false;
-  qrCode = null;
-  isInitializing = false;
+  const currentNumber = activeNumber;
+  const currentPushName = activePushName;
   activeNumber = null;
   activePushName = null;
-  console.log('✅ WhatsApp logged out and destroyed');
+  activeSessionId = null;
+  
+  try {
+    // If we have a client, try to log out gracefully
+    if (currentClient) {
+      try {
+        await currentClient.logout();
+      } catch (logoutError) {
+        console.warn('Error during client.logout(), continuing with session cleanup:', logoutError);
+      }
+    }
+    
+    // Mark session as inactive in the database
+    if (sessionToLogout) {
+      await markSessionInactive(sessionToLogout);
+    }
+    
+    return { 
+      success: true, 
+      message: 'Successfully logged out',
+      session: {
+        number: currentNumber,
+        pushName: currentPushName,
+        sessionId: sessionToLogout
+      }
+    };
+  } catch (error) {
+    console.error('Error during logout cleanup:', error);
+    return { 
+      success: false, 
+      message: 'Logged out but encountered error during cleanup: ' + error.message,
+      session: {
+        number: currentNumber,
+        pushName: currentPushName,
+        sessionId: sessionToLogout
+      }
+    };
+  }
 }
 
 // Pause campaign using queue system
@@ -281,4 +563,4 @@ export async function stopCampaignService(campaignId) {
   return await queueStopCampaign(campaignId);
 }
 
-export { initWhatsApp, getWhatsAppStatus, logoutWhatsApp, getClient, getActiveSessionId };
+export { initWhatsApp, getWhatsAppStatus, logoutWhatsApp, getClient, getActiveSessionId, clearLocalAuthProfile };

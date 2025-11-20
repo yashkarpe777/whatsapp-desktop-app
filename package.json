@@ -117,6 +117,7 @@
     "asar": true,
     "asarUnpack": [
       "node_modules/puppeteer-core/**",
+      "node_modules/ffmpeg-static/**",
       "node_modules/**/build/**",
       "node_modules/**/{*.node,*.dll}"
     ],
@@ -168,7 +169,8 @@
       "target": "nsis",
       "artifactName": "${productName}-Setup-${version}.${ext}",
       "compression": "maximum",
-      "executableName": "WhatsAppBlast"
+      "executableName": "WhatsAppBlast",
+      "icon": "electron/assets/icon.ico"
     },
     "nsis": {
       "oneClick": true,

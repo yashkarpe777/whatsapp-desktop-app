@@ -202,6 +202,20 @@ console.log('✅ Campaign queue initialized (simple in-memory queue, no Redis re
 // Store active campaign states in memory and DB
 const activeCampaigns = new Map();
 
+async function removeQueuedJobsForCampaign(campaignId) {
+  const jobs = await messageQueue.getJobs(['waiting', 'delayed']);
+  let removed = 0;
+  for (const job of jobs) {
+    if (job?.data?.campaignId === campaignId) {
+      await job.remove();
+      removed += 1;
+    }
+  }
+  if (removed > 0) {
+    console.log(`🧹 Removed ${removed} queued jobs for campaign ${campaignId}`);
+  }
+}
+
 /**
  * Initialize campaign queue processor
  * @param {Object} whatsappClient - WhatsApp client instance
@@ -467,12 +481,14 @@ export async function pauseCampaign(campaignId) {
   // Update in-memory state
   const state = activeCampaigns.get(campaignId);
   if (state) {
-    state.status = 'paused';
-    activeCampaigns.set(campaignId, state);
+    activeCampaigns.set(campaignId, { ...state, status: 'paused' });
   }
 
   // Save state to DB
   await saveCampaignState(campaignId, { status: 'paused' });
+
+  // Remove any queued jobs so they can be re-enqueued on resume
+  await removeQueuedJobsForCampaign(campaignId);
 
   // Note: Jobs remain in queue but will be skipped when processed
   return { success: true, message: 'Campaign paused' };
@@ -492,19 +508,29 @@ export async function resumeCampaign(campaignId, authHeader = '') {
 
   // Update in-memory state
   const state = activeCampaigns.get(campaignId);
+  const effectiveAuthHeader = authHeader || state?.authHeader || '';
   if (state) {
-    state.status = 'running';
-    state.authHeader = authHeader;
-    activeCampaigns.set(campaignId, state);
+    activeCampaigns.set(campaignId, { ...state, status: 'running', authHeader: effectiveAuthHeader });
   }
 
   // Save state to DB
   await saveCampaignState(campaignId, { status: 'running' });
 
-  // Re-enqueue any pending contacts that might have been skipped
-  await enqueueCampaign(campaignId, authHeader);
+  const pendingCountRes = await hotPool.query(
+    "SELECT COUNT(*) AS count FROM campaign_logs WHERE campaign_id = $1 AND status = 'pending'",
+    [campaignId]
+  );
+  const pendingCount = parseInt(pendingCountRes.rows?.[0]?.count || '0', 10);
 
-  return { success: true, message: 'Campaign resumed' };
+  if (pendingCount === 0) {
+    console.log(`ℹ️ No pending contacts for campaign ${campaignId}; nothing to resume.`);
+    return { success: true, message: 'No pending contacts to resume' };
+  }
+
+  // Re-enqueue pending contacts
+  await enqueueCampaign(campaignId, effectiveAuthHeader);
+
+  return { success: true, message: `Campaign resumed with ${pendingCount} pending contacts` };
 }
 
 /**

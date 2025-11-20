@@ -1,26 +1,64 @@
 import fs from 'fs';
 import path from 'path';
+import { createRequire } from 'module';
+import { fileURLToPath } from 'url';
 import ffmpeg from 'fluent-ffmpeg';
 import pkg from 'whatsapp-web.js';
 const { MessageMedia } = pkg;
 
-// Try to import ffmpeg-static, but don't fail if not available
-let ffmpegStatic = null;
-try {
-  const ffmpegModule = await import('ffmpeg-static');
-  ffmpegStatic = ffmpegModule.default;
-  if (ffmpegStatic) {
-    ffmpeg.setFfmpegPath(ffmpegStatic);
-    console.log('✅ FFmpeg binary loaded from ffmpeg-static');
-  }
-} catch (err) {
-  console.warn('⚠️ ffmpeg-static not available, will try system FFmpeg');
-  // Try to use system FFmpeg if available
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const require = createRequire(import.meta.url);
+
+const executableName = process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg';
+
+const trySetFfmpegPath = (candidate, label) => {
+  if (!candidate) return false;
   try {
-    ffmpeg.setFfmpegPath('ffmpeg');
-  } catch (e) {
-    console.warn('⚠️ System FFmpeg not found either');
+    const resolved = path.resolve(candidate);
+    if (fs.existsSync(resolved)) {
+      ffmpeg.setFfmpegPath(resolved);
+      console.log(`✅ FFmpeg binary loaded from ${label}: ${resolved}`);
+      return true;
+    }
+  } catch (err) {
+    console.warn(`⚠️ Failed to set FFmpeg path (${label}):`, err?.message || err);
   }
+  return false;
+};
+
+let ffmpegConfigured = false;
+
+try {
+  const ffmpegStaticPath = require('ffmpeg-static');
+  ffmpegConfigured = trySetFfmpegPath(ffmpegStaticPath, 'ffmpeg-static');
+} catch (err) {
+  console.warn('⚠️ ffmpeg-static not bundled:', err?.message || err);
+}
+
+if (!ffmpegConfigured) {
+  ffmpegConfigured = trySetFfmpegPath(process.env.FFMPEG_PATH, 'FFMPEG_PATH env');
+}
+
+if (!ffmpegConfigured) {
+  const candidates = [];
+  if (process?.resourcesPath) {
+    candidates.push(path.join(process.resourcesPath, 'ffmpeg', executableName));
+    candidates.push(path.join(process.resourcesPath, executableName));
+  }
+  candidates.push(path.join(__dirname, '..', '..', 'ffmpeg', executableName));
+  candidates.push(path.join(process.cwd(), 'ffmpeg', executableName));
+
+  for (const candidate of candidates) {
+    if (trySetFfmpegPath(candidate, 'packaged resource')) {
+      ffmpegConfigured = true;
+      break;
+    }
+  }
+}
+
+if (!ffmpegConfigured) {
+  console.warn('⚠️ No FFmpeg binary detected. Large media will fallback to direct send.');
 }
 
 /**

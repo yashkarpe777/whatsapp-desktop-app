@@ -1,7 +1,7 @@
 // Electron main process (CommonJS) that starts the local backend and opens the UI
 // Secure defaults: sandboxed renderer, contextIsolation on, nodeIntegration off
 
-const { app, BrowserWindow, dialog, shell, ipcMain } = require('electron');
+const { app, BrowserWindow, dialog, shell, ipcMain, Tray, nativeImage } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { fork } = require('child_process');
@@ -94,19 +94,14 @@ function startBackend() {
     CHROME_BIN: process.env.CHROME_BIN || 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
     PUPPETEER_SKIP_DOWNLOAD: 'true',
     PUPPETEER_EXECUTABLE_PATH: process.env.CHROME_BIN || 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-    // Online coins/auth base (Render)
-    ADMIN_API_BASE_URL: process.env.ADMIN_API_BASE_URL || 'https://bulk-whatsapp-sender-desktopapp.onrender.com',
-    // Render Postgres settings: ensure packaged app has a working external DB for auth/users/coins
-    DATABASE_URL: process.env.DATABASE_URL || process.env.RENDER_DATABASE_URL || 'postgresql://whatsapp_db_czfd_user:kjL9PHyN2UpgSj70MfBDztsdhPnuxy8y@dpg-d3gfdc95pdvs73ef6umg-a.singapore-postgres.render.com/whatsapp_db_czfd',
-    DB_SSL: process.env.DB_SSL || 'true',
+    ADMIN_API_BASE_URL: process.env.ADMIN_API_BASE_URL || 'http://127.0.0.1:3000',
+    DATABASE_URL: process.env.DATABASE_URL || 'postgresql://postgres:admin@localhost:5432/whatsapp_blast',
+    DB_SSL: process.env.DB_SSL || 'false',
   };
 
   log(`Starting backend: ${serverEntry}`);
   log(`Env PORT=${env.PORT} SERVICE_MODE=${env.SERVICE_MODE}`);
-  try {
-    const hasRender = !!env.DATABASE_URL;
-    log(`Render DB configured: ${hasRender ? 'yes' : 'no'}`);
-  } catch {}
+  try { const hasRender = !!env.DATABASE_URL; log(`Render DB configured: ${hasRender ? 'yes' : 'no'}`); } catch {}
 
   const child = fork(serverEntry, [], { env, stdio: 'pipe', silent: true });
   child.stdout && child.stdout.on('data', (d) => { const t = d.toString(); log(t.trim()); });
@@ -132,6 +127,7 @@ async function createWindow() {
   win = new BrowserWindow({
     width: 1280,
     height: 800,
+    icon: path.join(__dirname, 'assets', 'icon.ico'),
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
@@ -141,12 +137,22 @@ async function createWindow() {
     },
   });
 
+  const iconPath = path.join(__dirname, 'assets', 'icon.ico');
+  const image = nativeImage.createFromPath(iconPath);
+  if (!image.isEmpty()) {
+    tray = new Tray(image);
+    tray.setToolTip('WhatsApp Blast');
+    tray.on('click', () => {
+      if (win) {
+        win.isVisible() ? win.hide() : win.show();
+      }
+    });
+  }
+
   try {
     if (isDev()) {
       await win.loadURL('http://127.0.0.1:8080');
     } else {
-      // In production, files are inside resources/app.asar; __dirname points
-      // to resources/app.asar/electron, so ../dist/index.html resolves correctly.
       const indexPath = path.join(__dirname, '..', 'dist', 'index.html');
       await win.loadFile(indexPath);
     }

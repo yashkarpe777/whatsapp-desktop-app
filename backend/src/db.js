@@ -209,7 +209,18 @@ async function ensureHostSchema(poolInstance) {
       otp VARCHAR(10) NOT NULL,
       expires_at TIMESTAMP NOT NULL,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )`
+    )`,
+    `CREATE TABLE IF NOT EXISTS whatsapp_sessions (
+      id SERIAL PRIMARY KEY,
+      session_id VARCHAR(100) UNIQUE NOT NULL,
+      phone_number VARCHAR(20),
+      push_name VARCHAR(255),
+      is_active BOOLEAN DEFAULT TRUE,
+      last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_whatsapp_sessions_session_id ON whatsapp_sessions(session_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_whatsapp_sessions_active ON whatsapp_sessions(is_active)`
   ];
 
   const client = await poolInstance.connect();
@@ -332,6 +343,17 @@ async function ensureLocalSchema(poolInstance) {
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )`,
     `CREATE INDEX IF NOT EXISTS idx_campaign_state_campaign_id ON campaign_state(campaign_id)`,
+    `CREATE TABLE IF NOT EXISTS whatsapp_sessions (
+      id SERIAL PRIMARY KEY,
+      session_id VARCHAR(100) UNIQUE NOT NULL,
+      phone_number VARCHAR(20),
+      push_name VARCHAR(255),
+      is_active BOOLEAN DEFAULT TRUE,
+      last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_whatsapp_sessions_session_id ON whatsapp_sessions(session_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_whatsapp_sessions_active ON whatsapp_sessions(is_active)`,
     `CREATE TABLE IF NOT EXISTS cleanup_logs (
       id SERIAL PRIMARY KEY,
       operation VARCHAR(50) NOT NULL,
