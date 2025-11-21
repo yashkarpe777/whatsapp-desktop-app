@@ -1,9 +1,12 @@
 import dotenv from "dotenv";
-import pkg from "pg";
 import path from "path";
 import { fileURLToPath } from "url";
+import { createRequire } from "module";
 import fs from "fs";
 import { databaseConfig } from "./databaseConfig.js";
+
+const require = createRequire(import.meta.url);
+const pkg = require("pg");
 
 try {
   const __filename = fileURLToPath(import.meta.url);
@@ -13,7 +16,15 @@ try {
   dotenv.config({ override: true });
 }
 
-const disableLocalDb = String(process.env.DISABLE_LOCAL_DB || "").toLowerCase() === "true";
+const serviceMode = String(process.env.SERVICE_MODE || "").toLowerCase();
+const disableLocalDbFlag = String(
+  process.env.DISABLE_LOCAL_DB ?? process.env.DISABLED_LOCAL_DB ?? ""
+).toLowerCase();
+const disableLocalDb = disableLocalDbFlag === "true" || serviceMode === "coins-only";
+
+if (serviceMode === "coins-only" && disableLocalDbFlag !== "true") {
+  console.log("⏭️  Service mode 'coins-only' detected – skipping local database initialization");
+}
 
 const { Pool } = pkg;
 
@@ -37,8 +48,8 @@ function buildHostPool() {
     connectionTimeoutMillis: Number(process.env.PG_CONN_TIMEOUT_MS || 5000),
   };
 
-  console.log('✅ Host pool config:', { 
-    ssl: config.ssl, 
+  console.log('✅ Host pool config:', {
+    ssl: config.ssl,
     keepAlive: config.keepAlive,
     max: config.max,
     idleTimeoutMillis: config.idleTimeoutMillis,
@@ -117,7 +128,7 @@ function buildLocalPool() {
     try {
       const safe = { ...cfg, password: cfg.password ? `len:${String(cfg.password).length}` : undefined, ssl: !!cfg.ssl };
       console.log('Local DB config ->', safe);
-    } catch {}
+    } catch { }
   }
   return new Pool(cfg);
 }
@@ -146,10 +157,10 @@ export const rebuildPool = async () => {
       console.log('✅ Closed existing local pool');
     } catch (error) {
       console.warn('⚠️ Error closing existing pool:', error.message);
-     }
+    }
   }
   localPool = buildLocalPool();
-  
+
   if (!localPool) {
     console.error('❌ Failed to build local pool - no configuration found');
     throw new Error('No local database configuration found');
@@ -169,7 +180,7 @@ export const isLocalPoolConnected = async () => {
   if (!localPool) {
     return false;
   }
-  
+
   try {
     await localPool.query('SELECT 1');
     return true;
@@ -388,7 +399,7 @@ async function initializeHostDatabase(poolInstance) {
 }
 async function removeForeignKeyConstraints(poolInstance) {
   if (!poolInstance) return;
-  
+
   const constraints = [
     { table: 'contact_groups', constraint: 'contact_groups_user_id_fkey' },
     { table: 'contacts', constraint: 'contacts_user_id_fkey' },
@@ -396,7 +407,7 @@ async function removeForeignKeyConstraints(poolInstance) {
     { table: 'uploads', constraint: 'uploads_user_id_fkey' },
     { table: 'settings', constraint: 'settings_updated_by_fkey' }
   ];
-  
+
   const client = await poolInstance.connect();
   try {
     for (const { table, constraint } of constraints) {
@@ -496,6 +507,9 @@ export const testConnection = async () => {
 };
 
 export const isLocalDbDisabled = () => disableLocalDb;
+
+// Backward compatibility alias (older imports expect rebuildLocalPool)
+export const rebuildLocalPool = rebuildPool;
 
 export { hostPool, localPool };
 export default hostPool;

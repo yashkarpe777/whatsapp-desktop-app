@@ -658,6 +658,11 @@ async function checkCampaignCompletion(campaignId) {
  * Recover campaigns after crash
  */
 export async function recoverCampaigns() {
+  if ((process.env.SERVICE_MODE || '').toLowerCase() === 'coins-only') {
+    console.log('⏭️  Coins-only mode – campaign recovery skipped');
+    return { success: true, recovered: 0 };
+  }
+
   console.log('🔄 Recovering campaigns after restart...');
 
   try {

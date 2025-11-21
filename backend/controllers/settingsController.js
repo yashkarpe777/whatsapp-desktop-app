@@ -2,12 +2,14 @@ import defaultPool, { rebuildPool, isLocalPoolConnected, getLocalPool, hostPool 
 import { databaseConfig } from "../src/databaseConfig.js";
 import fs from 'fs';
 import path from 'path';
-import pkg from 'pg';
-const { Pool } = pkg;
+import { createRequire } from 'module';
+
+const require = createRequire(import.meta.url);
+const { Pool } = require('pg');
 
 export const getSettings = async (req, res) => {
   try {
-    const pool = getLocalPool() || hostPool || defaultPool;
+    const pool = hostPool || defaultPool;
     const keys = ['whatsapp_number', 'profile_name', 'email', 'app_icon'];
     let result;
     try {

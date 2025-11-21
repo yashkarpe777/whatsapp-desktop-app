@@ -44,8 +44,9 @@ app.use(express.urlencoded({ extended: true }));
 
 
 const SERVICE_MODE = process.env.SERVICE_MODE || 'all';
+const isCoinsOnly = SERVICE_MODE === 'coins-only';
 
-if (SERVICE_MODE !== 'coins-only') {
+if (!isCoinsOnly) {
   // Serve static files for media when running full service
   const uploadsDir = process.env.UPLOADS_DIR || path.join(process.cwd(), 'uploads');
   app.use('/uploads', express.static(uploadsDir));
@@ -163,30 +164,30 @@ app.listen(PORT, () => {
   console.log(`🧩 Service mode: ${svc}`);
   console.log(`🗄️  DB host: ${dbHost}`);
   console.log(`✉️  Email configured: ${emailSet}`);
-  if (svc !== 'coins-only') {
+  if (!isCoinsOnly) {
     const uploadsDir = process.env.UPLOADS_DIR || path.join(process.cwd(), 'uploads');
     console.log(`📁 Static files served from: ${uploadsDir}`);
   }
 
-  // Campaign recovery: resume any running campaigns after restart
-  setTimeout(async () => {
-    console.log('🔄 Starting campaign recovery...');
-    try {
-      // Don't initialize WhatsApp on startup - only when user explicitly connects
-      // This prevents browser opening automatically
-      
-      // Just recover campaign state without WhatsApp connection
-      await recoverCampaigns();
-    } catch (error) {
-      console.error('❌ Campaign recovery failed:', error.message);
-    }
-  }, 5000);
+  if (isCoinsOnly) {
+    console.log('⏭️  Coins-only mode active – skipping campaign recovery and cleanup schedulers');
+  } else {
+    // Campaign recovery: resume any running campaigns after restart
+    setTimeout(async () => {
+      console.log('🔄 Starting campaign recovery...');
+      try {
+        await recoverCampaigns();
+      } catch (error) {
+        console.error('❌ Campaign recovery failed:', error.message);
+      }
+    }, 5000);
 
-  // Run cleanup on startup and then daily
-  setTimeout(runCleanup, 10000);
+    // Run cleanup on startup and then daily
+    setTimeout(runCleanup, 10000);
 
-  // Clean up queue periodically
-  setInterval(cleanupQueue, 24 * 60 * 60 * 1000); // Daily
+    // Clean up queue periodically
+    setInterval(cleanupQueue, 24 * 60 * 60 * 1000); // Daily
+  }
 });
 
 // Lightweight crash-resume engine using Postgres advisory locks
@@ -215,15 +216,19 @@ async function resumeInProgressCampaigns() {
   }
 }
 
-// Periodic resume sweep (as backup to queue system)
-setInterval(resumeInProgressCampaigns, 5 * 60 * 1000); // Every 5 minutes
+if (!isCoinsOnly) {
+  // Periodic resume sweep (as backup to queue system)
+  setInterval(resumeInProgressCampaigns, 5 * 60 * 1000); // Every 5 minutes
 
-// Daily cleanup at 2 AM
-setInterval(() => {
-  const now = new Date();
-  if (now.getHours() === 2 && now.getMinutes() === 0) {
-    runCleanup().catch(console.error);
-  }
-}, 60 * 1000); 
+  // Daily cleanup at 2 AM
+  setInterval(() => {
+    const now = new Date();
+    if (now.getHours() === 2 && now.getMinutes() === 0) {
+      runCleanup().catch(console.error);
+    }
+  }, 60 * 1000);
+} else {
+  console.log('⏭️  Skipping background schedulers in coins-only mode');
+}
 
 export default app;

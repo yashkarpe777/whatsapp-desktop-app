@@ -15,6 +15,7 @@ function getConfigDir() {
   try { fs.mkdirSync(fallback, { recursive: true }); } catch {}
   return fallback;
 }
+
 class DatabaseConfig {
   constructor() {
     const baseDir = getConfigDir();
@@ -27,7 +28,6 @@ class DatabaseConfig {
       if (fs.existsSync(this.configPath)) {
         const data = fs.readFileSync(this.configPath, 'utf8');
         const config = JSON.parse(data);
-        // Ensure password is always a string (PostgreSQL SASL requirement)
         if (config && config.password !== undefined && config.password !== null) {
           config.password = String(config.password);
         }
@@ -36,6 +36,19 @@ class DatabaseConfig {
     } catch (error) {
       console.warn('Failed to load database config:', error.message);
     }
+
+    // Fallback to env variables
+    if (process.env.LOCAL_DB_HOST && process.env.LOCAL_DB_USER && process.env.LOCAL_DB_NAME) {
+      return {
+        host: process.env.LOCAL_DB_HOST,
+        port: Number(process.env.LOCAL_DB_PORT || 5432),
+        user: process.env.LOCAL_DB_USER,
+        password: process.env.LOCAL_DB_PASSWORD,
+        database: process.env.LOCAL_DB_NAME,
+        ssl: process.env.LOCAL_DB_SSL === 'true'
+      };
+    }
+
     return null;
   }
 
@@ -43,12 +56,7 @@ class DatabaseConfig {
     try {
       const dir = path.dirname(this.configPath);
       try { fs.mkdirSync(dir, { recursive: true }); } catch {}
-      const configData = {
-        ...config,
-        // Ensure password is always a string (PostgreSQL SASL requirement)
-        password: config.password !== undefined && config.password !== null ? String(config.password) : '',
-        updatedAt: new Date().toISOString()
-      };
+      const configData = { ...config, password: config.password ? String(config.password) : '', updatedAt: new Date().toISOString() };
       fs.writeFileSync(this.configPath, JSON.stringify(configData, null, 2), 'utf8');
       this.config = configData;
       console.log('✅ Database configuration saved successfully');
@@ -69,9 +77,7 @@ class DatabaseConfig {
 
   clearConfig() {
     try {
-      if (fs.existsSync(this.configPath)) {
-        fs.unlinkSync(this.configPath);
-      }
+      if (fs.existsSync(this.configPath)) fs.unlinkSync(this.configPath);
       this.config = null;
       console.log('✅ Database configuration cleared');
       return true;
@@ -83,6 +89,3 @@ class DatabaseConfig {
 }
 
 export const databaseConfig = new DatabaseConfig();
-
-
-

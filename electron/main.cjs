@@ -95,7 +95,7 @@ function startBackend() {
     PUPPETEER_SKIP_DOWNLOAD: 'true',
     PUPPETEER_EXECUTABLE_PATH: process.env.CHROME_BIN || 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
     ADMIN_API_BASE_URL: process.env.ADMIN_API_BASE_URL || 'http://127.0.0.1:3000',
-    DATABASE_URL: process.env.DATABASE_URL || 'postgresql://postgres:admin@localhost:5432/whatsapp_blast',
+    DATABASE_URL: process.env.DATABASE_URL || 'postgresql://app_user:strongpassword@localhost:5432/whatsapp_blast',
     DB_SSL: process.env.DB_SSL || 'false',
   };
 
