@@ -225,12 +225,23 @@ async function initWhatsApp(_retry = false) {
     client.on('disconnected', async (reason) => {
       console.log(`❌ WhatsApp client disconnected. Reason: ${reason}`);
       console.log('⚠️  Disconnected, but keeping session active for potential reconnection');
-      
+
+      const sessionToMarkInactive = activeSessionId;
+      const currentClient = client;
+
+      if (currentClient) {
+        try {
+          await currentClient.destroy();
+        } catch (err) {
+          console.warn('⚠️ Failed to destroy client cleanly:', err?.message || err);
+        }
+      }
+
       // Don't destroy the client immediately to allow for reconnection
       client = null;
       isReady = false;
       isInitializing = false;
-      
+
       // Try to reconnect after a delay
       console.log('🔄 Attempting to reconnect in 5 seconds...');
       setTimeout(() => {
@@ -239,15 +250,15 @@ async function initWhatsApp(_retry = false) {
           console.error('❌ Reconnection failed:', err);
         });
       }, 5000);
-      
+
       // Keep the active session info to allow for reconnection
       // activeNumber and activeSessionId are kept to maintain session state
       isInitializing = false;
       queueInitialized = false;
 
-      if (previousSession) {
+      if (sessionToMarkInactive) {
         try {
-          await markSessionInactive(previousSession);
+          await markSessionInactive(sessionToMarkInactive);
         } catch (err) {
           console.warn('⚠️ Failed to mark session inactive on disconnect:', err?.message || err);
         }

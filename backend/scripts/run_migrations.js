@@ -23,13 +23,32 @@ if (fs.existsSync(configPath)) {
   console.log('✅ Loaded database config from database_config.json');
 }
 
+// Resolve connection details without hard-coded fallbacks
+const resolvedHost = dbConfig.host ?? process.env.DB_HOST;
+const resolvedPort = Number(dbConfig.port ?? process.env.DB_PORT ?? 5432);
+const resolvedUser = dbConfig.user ?? process.env.DB_USER;
+const resolvedPassword = dbConfig.password ?? process.env.DB_PASSWORD;
+const resolvedDatabase = dbConfig.database ?? process.env.DB_NAME;
+
+const missingFields = [];
+if (!resolvedHost) missingFields.push('host');
+if (!resolvedUser) missingFields.push('user');
+if (!resolvedPassword) missingFields.push('password');
+if (!resolvedDatabase) missingFields.push('database');
+
+if (missingFields.length > 0) {
+  console.error('❌ Missing database configuration values:', missingFields.join(', '));
+  console.error('   Provide them via', configPath, 'or environment variables.');
+  process.exit(1);
+}
+
 // Create pool
 const pool = new Pool({
-  host: dbConfig.host || process.env.DB_HOST || 'localhost',
-  port: dbConfig.port || process.env.DB_PORT || 5432,
-  user: dbConfig.user || process.env.DB_USER || 'postgres',
-  password: dbConfig.password || process.env.DB_PASSWORD || 'postgres',
-  database: dbConfig.database || process.env.DB_NAME || 'whatsapp_blast',
+  host: resolvedHost,
+  port: resolvedPort,
+  user: resolvedUser,
+  password: resolvedPassword,
+  database: resolvedDatabase,
   ssl: false
 });
 
