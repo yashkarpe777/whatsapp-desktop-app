@@ -25,6 +25,7 @@ let activeSessionId = null;
 let queueInitialized = false;
 let sessionTableEnsured = false;
 
+let WhatsAppModule;
 let Client;
 let LocalAuth;
 let MessageMedia;
@@ -86,10 +87,12 @@ async function ensureWhatsAppModules() {
 
   patchModuleLoader();
 
-  const wweb = await import('whatsapp-web.js');
-  Client = wweb.Client;
-  LocalAuth = wweb.LocalAuth;
-  MessageMedia = wweb.MessageMedia;
+  const importTarget = await import('whatsapp-web.js');
+  const resolved = importTarget.default ?? importTarget;
+  WhatsAppModule = resolved;
+  Client = resolved.Client;
+  LocalAuth = resolved.LocalAuth;
+  MessageMedia = resolved.MessageMedia;
 
   registerWhatsAppDependencies({ MessageMedia });
 }
