@@ -108,12 +108,7 @@ function ensureDirectory(targetPath) {
   return targetPath;
 }
 
-function getPrimaryLocalAuthPath() {
-  if (process.env.WHATSAPP_DATA_PATH) {
-    const resolved = path.resolve(process.env.WHATSAPP_DATA_PATH);
-    return ensureDirectory(resolved);
-  }
-
+function resolveDefaultLocalAuthPath() {
   const platform = process.platform;
   let baseDir;
 
@@ -125,22 +120,95 @@ function getPrimaryLocalAuthPath() {
     baseDir = process.env.XDG_DATA_HOME || path.join(os.homedir(), '.local', 'share');
   }
 
-  const sessionDir = path.join(baseDir, 'whatsapp-bulk-sender', 'session');
-  return ensureDirectory(sessionDir);
+  return path.join(baseDir, 'whatsapp-bulk-sender', 'session');
+}
+
+function collectLocalAuthCandidates() {
+  const set = new Set();
+  if (process.env.WHATSAPP_DATA_PATH) {
+    set.add(path.resolve(process.env.WHATSAPP_DATA_PATH));
+  }
+  set.add(path.resolve(resolveDefaultLocalAuthPath()));
+  set.add(path.resolve(process.cwd(), '.wwebjs_auth'));
+  set.add(path.resolve(__dirname, '..', '..', '.wwebjs_auth'));
+  return Array.from(set);
+}
+
+function hasLocalAuthProfile(candidatePath) {
+  try {
+    const settingsPath = path.join(candidatePath, 'session.settings.json');
+    if (fs.existsSync(settingsPath)) {
+      return true;
+    }
+
+    const levelDbPath = path.join(candidatePath, 'Default', 'Local Storage', 'leveldb');
+    if (fs.existsSync(levelDbPath)) {
+      const files = fs.readdirSync(levelDbPath);
+      return files.some((file) => file.endsWith('.log') || file.endsWith('.ldb'));
+    }
+  } catch (err) {
+    console.warn('⚠️ Failed to inspect LocalAuth path:', candidatePath, err?.message || err);
+  }
+
+  return false;
+}
+
+function getPrimaryLocalAuthPath() {
+  const candidates = collectLocalAuthCandidates();
+  for (const candidate of candidates) {
+    const normalized = path.resolve(candidate);
+    if (hasLocalAuthProfile(normalized)) {
+      ensureDirectory(normalized);
+      if (process.env.WHATSAPP_DATA_PATH !== normalized) {
+        process.env.WHATSAPP_DATA_PATH = normalized;
+      }
+      console.log('📁 Reusing existing WhatsApp session profile at:', normalized);
+      return normalized;
+    }
+  }
+
+  const target = candidates[0] || resolveDefaultLocalAuthPath();
+  return ensureDirectory(target);
 }
 
 function getLocalAuthCandidates() {
-  const candidates = new Set();
-  // Primary path actually used by the client
-  candidates.add(getPrimaryLocalAuthPath());
-  // Backwards-compat / extra locations that may contain old sessions
-  if (process.env.WHATSAPP_DATA_PATH) {
-    candidates.add(path.resolve(process.env.WHATSAPP_DATA_PATH));
-  }
-  candidates.add(path.resolve(process.cwd(), '.wwebjs_auth'));
-  candidates.add(path.resolve(__dirname, '..', '..', '.wwebjs_auth'));
+  const primary = getPrimaryLocalAuthPath();
+  const others = collectLocalAuthCandidates().filter((candidate) => path.resolve(candidate) !== path.resolve(primary));
+  return [primary, ...others];
+}
 
-  return Array.from(candidates);
+async function pruneExtraLocalAuthProfiles(primaryPath, options = {}) {
+  const normalizedPrimary = path.resolve(primaryPath);
+  const candidates = collectLocalAuthCandidates();
+  const toRemove = candidates.filter((candidate) => path.resolve(candidate) !== normalizedPrimary);
+
+  if (!toRemove.length) {
+    return [];
+  }
+
+  const outcomes = [];
+  for (const candidate of toRemove) {
+    const target = path.resolve(candidate);
+    try {
+      const outcome = await removeDirectoryWithRetries(target, options);
+      outcomes.push(outcome);
+      if (outcome.removed) {
+        console.log('🧹 Removed extra WhatsApp session profile:', target);
+      }
+    } catch (err) {
+      outcomes.push({
+        path: target,
+        exists: true,
+        removed: false,
+        attempts: 0,
+        soft: false,
+        error: err,
+      });
+      console.warn('⚠️ Failed to remove extra WhatsApp session profile:', target, err?.message || err);
+    }
+  }
+
+  return outcomes;
 }
 
 async function pathExists(targetPath) {
@@ -251,8 +319,12 @@ async function initWhatsApp(_retry = false) {
       client = null;
     }
 
-    const headless = process.env.HEADLESS === 'true';
+    const headlessEnv = String(process.env.HEADLESS || 'false').toLowerCase();
+    const prefersHeadless = headlessEnv === 'true';
+    const headless = _retry ? true : prefersHeadless;
+
     const dataPath = getPrimaryLocalAuthPath();
+    await pruneExtraLocalAuthProfiles(dataPath, { maxAttempts: 3, delayMs: 500 });
     const authStrategy = new LocalAuth({ 
       dataPath,
       clientId: getStableClientId(dataPath),
@@ -414,7 +486,6 @@ async function initWhatsApp(_retry = false) {
     isInitializing = false;
     if (!_retry && /Target closed/i.test(String(error?.message || ''))) {
       try {
-        process.env.HEADLESS = 'true';
         await initWhatsApp(true);
         return;
       } catch (_) {}

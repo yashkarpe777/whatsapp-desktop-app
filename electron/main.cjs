@@ -81,12 +81,15 @@ function startBackend() {
     }
   }
 
+  const sessionDir = path.join(userData, 'whatsapp-bulk-sender', 'session');
+  try { fs.mkdirSync(sessionDir, { recursive: true }); } catch {}
+
   const env = {
     ...process.env,
     PORT: String(PORT),
     SERVICE_MODE: 'all',
     HEADLESS: 'false',
-    WHATSAPP_DATA_PATH: path.join(userData, 'wwebjs_auth'),
+    WHATSAPP_DATA_PATH: sessionDir,
     UPLOADS_DIR: path.join(userData, 'uploads'),
     CONFIG_DIR: configDir,
     JWT_SECRET: jwtSecret,
