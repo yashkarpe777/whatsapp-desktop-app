@@ -21,6 +21,8 @@ const disableLocalDbFlag = String(
   process.env.DISABLE_LOCAL_DB ?? process.env.DISABLED_LOCAL_DB ?? ""
 ).toLowerCase();
 const disableLocalDb = disableLocalDbFlag === "true" || serviceMode === "coins-only";
+const enableHostDbFlag = String(process.env.ENABLE_HOST_DB || "").toLowerCase();
+const hostDbEnabled = enableHostDbFlag === "true";
 
 if (serviceMode === "coins-only" && disableLocalDbFlag !== "true") {
   console.log("⏭️  Service mode 'coins-only' detected – skipping local database initialization");
@@ -29,6 +31,10 @@ if (serviceMode === "coins-only" && disableLocalDbFlag !== "true") {
 const { Pool } = pkg;
 
 function buildHostPool() {
+  if (!hostDbEnabled) {
+    console.log("⏭️ Host database usage disabled (ENABLE_HOST_DB != true)");
+    return null;
+  }
   const useSsl = process.env.DB_SSL === "true";
   const connectionString = process.env.DATABASE_URL;
 

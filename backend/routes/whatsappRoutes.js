@@ -1,5 +1,5 @@
 import express from "express";
-import { getWhatsAppStatus, logoutWhatsApp, initWhatsApp } from "../src/services/whatsappservice.js";
+import { getWhatsAppStatus, logoutWhatsApp, disconnectWhatsApp, initWhatsApp } from "../src/services/whatsappservice.js";
 import fs from 'fs';
 import path from 'path';
 
@@ -92,8 +92,8 @@ router.post("/logout", async (req, res) => {
 // Alias to match frontend expectation
 router.post("/disconnect", async (req, res) => {
   try {
-    await logoutWhatsApp();
-    res.json({ success: true, message: "WhatsApp disconnected" });
+    const result = await disconnectWhatsApp();
+    res.json({ success: true, message: result.message, session: result.session });
   } catch (error) {
     console.error("Error disconnecting WhatsApp:", error);
     res.status(500).json({ error: "Failed to disconnect WhatsApp" });

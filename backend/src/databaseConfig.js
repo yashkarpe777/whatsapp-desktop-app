@@ -68,11 +68,21 @@ class DatabaseConfig {
   }
 
   getConfig() {
+    if (this.config && this.config.host && this.config.user && this.config.database) {
+      return this.config;
+    }
+
+    const refreshed = this.loadConfig();
+    if (refreshed) {
+      this.config = refreshed;
+    }
+
     return this.config;
   }
 
   hasConfig() {
-    return this.config && this.config.host && this.config.user && this.config.database;
+    const cfg = this.getConfig();
+    return !!(cfg && cfg.host && cfg.user && cfg.database);
   }
 
   clearConfig() {

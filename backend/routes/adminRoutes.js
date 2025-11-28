@@ -1,32 +1,39 @@
 import express from "express";
-import { hostPool } from "../src/db.js";
-import { authenticateToken } from "../middleware/authMiddleware.js";
 import bcrypt from "bcryptjs";
+import { hotPool, getLocalPool } from "../src/db.js";
+import { authenticateToken } from "../middleware/authMiddleware.js";
 import { getCleanupStats, runCleanup } from "../src/services/cleanupService.js";
 
 const router = express.Router();
-const pool = hostPool; // Admin operations always use Host (cloud) DB
+const pool = hotPool;
 
-// Lightweight diagnostics (no auth) to verify Render configuration
-router.get('/check', (req, res) => {
-  const svc = process.env.SERVICE_MODE || 'all';
-  const emailSet = Boolean(process.env.EMAIL_USER);
-  const passSet = Boolean(process.env.EMAIL_PASS);
-  const dbUrl = process.env.DATABASE_URL || '';
-  let dbHost = 'unknown';
+router.get("/check", async (_req, res) => {
   try {
-    // Normalize driver to parseable URL
-    const normalized = dbUrl.replace(/^postgres(ql)?:\/\//, 'http://');
-    const u = new URL(normalized);
-    dbHost = u.hostname || 'unknown';
-  } catch {}
-  return res.json({
-    ok: true,
-    service_mode: svc,
-    coins_only: svc === 'coins-only',
-    email_configured: emailSet && passSet,
-    db_host: dbHost,
-  });
+    const svc = process.env.SERVICE_MODE || "all";
+    const emailSet = Boolean(process.env.EMAIL_USER) && Boolean(process.env.EMAIL_PASS);
+    const localPool = getLocalPool();
+    let dbHost = "local-pg";
+    if (localPool) {
+      const client = await localPool.connect();
+      try {
+        const info = await client.query("SELECT inet_server_addr()::text AS host");
+        dbHost = info.rows?.[0]?.host || dbHost;
+      } finally {
+        client.release();
+      }
+    }
+    return res.json({
+      ok: true,
+      service_mode: svc,
+      coins_only: svc === "coins-only",
+      email_configured: emailSet,
+      db_host: dbHost,
+      mode: "local-only",
+    });
+  } catch (error) {
+    console.error("Admin check failed:", error);
+    return res.status(500).json({ ok: false, error: "Failed to inspect configuration" });
+  }
 });
 
 // Bootstrap first admin (no auth) guarded by a secret token
@@ -140,19 +147,19 @@ router.delete('/users/:id', authenticateToken, async (req, res) => {
   try {
     if (req.user.role !== 'admin') return res.sendStatus(403);
     const userId = Number(req.params.id);
-    
+
     // Prevent deleting yourself
     if (userId === req.user.id) {
       return res.status(400).json({ error: 'Cannot delete your own account' });
     }
-    
+
     // Delete user
     const result = await pool.query('DELETE FROM users WHERE id=$1 RETURNING id, email, username', [userId]);
-    
+
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'User not found' });
     }
-    
+
     res.json({ success: true, message: 'User deleted successfully', user: result.rows[0] });
   } catch (err) {
     console.error('✗ Delete User Error:', err);
@@ -164,7 +171,7 @@ router.delete('/users/:id', authenticateToken, async (req, res) => {
 router.get('/cleanup/stats', authenticateToken, async (req, res) => {
   try {
     if (req.user.role !== 'admin') return res.sendStatus(403);
-    
+
     const stats = await getCleanupStats();
     res.json({ success: true, stats });
   } catch (err) {
@@ -177,7 +184,7 @@ router.get('/cleanup/stats', authenticateToken, async (req, res) => {
 router.post('/cleanup/run', authenticateToken, async (req, res) => {
   try {
     if (req.user.role !== 'admin') return res.sendStatus(403);
-    
+
     const deletedCount = await runCleanup();
     res.json({ success: true, deletedCount, message: `Cleanup completed: ${deletedCount} items removed` });
   } catch (err) {

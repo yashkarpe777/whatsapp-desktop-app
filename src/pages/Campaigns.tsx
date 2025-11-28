@@ -23,7 +23,6 @@ import {
 } from "lucide-react";
 import { Link } from "react-router-dom";
 import { apiService, type Campaign, API_BASE_URL } from "@/services/api";
-import QRModal from "@/components/QRModal";
 import AttachmentPreview from "@/components/AttachmentPreview";
 import AttachmentLink from "@/components/AttachmentLink";
 
@@ -34,8 +33,6 @@ export default function Campaigns() {
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [createPreviewUrl, setCreatePreviewUrl] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
-  const [showQRModal, setShowQRModal] = useState(false);
-  const [currentCampaignId, setCurrentCampaignId] = useState<number | null>(null);
   const [startingCampaignId, setStartingCampaignId] = useState<number | null>(null);
   const { toast } = useToast();
 
@@ -76,9 +73,10 @@ export default function Campaigns() {
   useEffect(() => {
     loadCampaigns();
 
-    // Listen for contactsUpdated event to reload campaigns
+    // Listen for contactsUpdated event to reload campaigns and groups
     const handleContactsUpdated = () => {
       loadCampaigns();
+      loadContactGroups();
     };
     window.addEventListener('contactsUpdated', handleContactsUpdated);
 
@@ -157,28 +155,64 @@ export default function Campaigns() {
     }
   };
 
-  const handleStartCampaign = async (campaignId: number) => {
+  const waitForWhatsAppReady = async (timeoutMs = 60000, intervalMs = 2000) => {
+    const started = Date.now();
+    while (Date.now() - started < timeoutMs) {
+      try {
+        const status = await apiService.getWhatsAppStatusLight();
+        setWaStatus(status as any);
+        if (status?.ready) {
+          return true;
+        }
+      } catch (error) {
+        console.warn('Failed to poll WhatsApp status while waiting for login:', error);
+      }
+      await new Promise(resolve => setTimeout(resolve, intervalMs));
+    }
+    return false;
+  };
+
+  const handleStartCampaign = async (campaignId: number, retried = false) => {
     // Prevent multiple clicks
-    if (startingCampaignId === campaignId) {
+    if (!retried && startingCampaignId === campaignId) {
       console.log('⚠️ Campaign already starting, ignoring duplicate click');
       return;
     }
-    
+
     try {
       setStartingCampaignId(campaignId);
       console.log('🚀 Starting campaign:', campaignId);
-      
+
       const response = await apiService.startCampaign(campaignId);
       console.log('📥 Start campaign response:', response);
-      
+
       if (response.needsLogin) {
         console.log('⚠️ WhatsApp login needed');
-        setCurrentCampaignId(campaignId);
-        setShowQRModal(true);
         setStartingCampaignId(null);
-        return;
+        toast({
+          title: "WhatsApp login required",
+          description: "A WhatsApp window has opened. Please approve the login there, then the campaign will resume automatically.",
+        });
+        try {
+          await apiService.whatsappInit();
+        } catch (initError) {
+          console.error('Failed to launch WhatsApp for login:', initError);
+        }
+
+        const ready = await waitForWhatsAppReady();
+        if (!ready) {
+          toast({
+            title: "Login not detected",
+            description: "We could not confirm the WhatsApp login in time. Please try again after completing the login in the opened window.",
+            variant: "destructive",
+          });
+          return;
+        }
+
+        console.log('✅ WhatsApp session detected, restarting campaign');
+        return handleStartCampaign(campaignId, true);
       }
-      
+
       if (!response.success) {
         console.error('❌ Campaign start failed:', response.message);
         toast({
@@ -282,19 +316,6 @@ export default function Campaigns() {
         description: "Failed to delete campaign. Please try again.",
         variant: "destructive",
       });
-    }
-  };
-
-  const handleQRReady = async () => {
-    setShowQRModal(false);
-    setCurrentCampaignId(null);
-    try {
-      const status = await apiService.getWhatsAppStatusLight();
-      setWaStatus(status as any);
-    } catch {}
-    if (currentCampaignId) {
-      // Retry starting the campaign after login
-      handleStartCampaign(currentCampaignId);
     }
   };
 
@@ -722,21 +743,23 @@ className="w-full p-2 border rounded bg-background text-foreground"
                 <Button
                   variant="default"
                   size="sm"
-                  onClick={() => setShowQRModal(true)}
+                  onClick={async () => {
+                    try {
+                      await apiService.whatsappInit();
+                      const status = await apiService.getWhatsAppStatusLight();
+                      setWaStatus(status as any);
+                    } catch (error) {
+                      console.error('Failed to launch WhatsApp session:', error);
+                    }
+                  }}
                 >
-                  {waStatus?.ready ? 'Reconnect' : 'Connect'}
+                  {waStatus?.ready ? 'Reconnect WhatsApp' : 'Launch WhatsApp'}
                 </Button>
               </div>
             </div>
           </CardContent>
         </Card>
       </div>
-
-      <QRModal
-        isOpen={showQRModal}
-        onClose={() => { setShowQRModal(false); setCurrentCampaignId(null); }}
-        onReady={handleQRReady}
-      />
     </div>
   );
 }

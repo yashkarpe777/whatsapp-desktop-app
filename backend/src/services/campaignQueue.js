@@ -1,11 +1,31 @@
 // import Queue from 'bull'; // Removed - using simple queue instead
 import { EventEmitter } from 'events';
 import { hotPool } from '../db.js';
-import pkg from 'whatsapp-web.js';
-const { MessageMedia } = pkg;
+import { syncCampaignCoinSpend } from './coinService.js';
 import path from 'path';
 import fs from 'fs';
-import { authorizeCoinsRemote, getBalanceRemote } from './remoteCoins.js';
+
+let MessageMedia = null;
+
+export function registerWhatsAppDependencies(deps = {}) {
+  MessageMedia = deps.MessageMedia || null;
+}
+
+const MIN_DELAY_MS = Number(process.env.WHATSAPP_MIN_DELAY_MS || 2000);
+const MAX_DELAY_MS = Number(process.env.WHATSAPP_MAX_DELAY_MS || 5000);
+
+function getHumanDelay(delaySeconds = 0) {
+  const baseMs = Math.max(Math.floor(delaySeconds * 1000), MIN_DELAY_MS);
+  const upperBound = Math.max(baseMs + 750, MAX_DELAY_MS, MIN_DELAY_MS + 1000);
+  const jitter = Math.floor(Math.random() * (upperBound - baseMs + 1));
+  return baseMs + jitter;
+}
+
+function ensureMessageHelpers() {
+  if (!MessageMedia) {
+    throw new Error('WhatsApp media helpers not registered. Ensure initWhatsApp() has completed.');
+  }
+}
 
 // Try to import video compressor, but make it optional
 let sendLargeVideo = null;
@@ -282,6 +302,7 @@ export function initializeCampaignQueue(whatsappClient) {
       let mediaFullPath = null;
       if (mediaPath) {
         try {
+          ensureMessageHelpers();
           const uploadsDir = process.env.UPLOADS_DIR || path.join(process.cwd(), 'uploads');
           mediaFullPath = path.join(uploadsDir, mediaPath);
           
@@ -353,9 +374,7 @@ export function initializeCampaignQueue(whatsappClient) {
       console.log(`💰 Message sent successfully (coin already deducted upfront)`);
 
       // Apply delay before next message
-      if (delaySeconds > 0) {
-        await new Promise(resolve => setTimeout(resolve, delaySeconds * 1000));
-      }
+      await new Promise(resolve => setTimeout(resolve, getHumanDelay(delaySeconds)));
 
       return { success: true, phone, contactId };
     } catch (error) {
@@ -562,6 +581,12 @@ export async function stopCampaign(campaignId) {
     [campaignId]
   );
 
+  try {
+    await syncCampaignCoinSpend(campaignId);
+  } catch (coinErr) {
+    console.warn('⚠️ Coin reconciliation failed after stop:', coinErr.message);
+  }
+
   return { success: true, message: 'Campaign stopped' };
 }
 
@@ -648,6 +673,11 @@ async function checkCampaignCompletion(campaignId) {
         [campaignId]
       );
       activeCampaigns.delete(campaignId);
+      try {
+        await syncCampaignCoinSpend(campaignId);
+      } catch (coinErr) {
+        console.warn('⚠️ Coin reconciliation failed after completion:', coinErr.message);
+      }
     }
   } catch (error) {
     console.error('Error checking campaign completion:', error);
@@ -693,9 +723,7 @@ export async function recoverCampaigns() {
   }
 }
 
-/**
- * Get queue statistics
- */
+
 export async function getQueueStats() {
   const waiting = await messageQueue.getWaitingCount();
   const active = await messageQueue.getActiveCount();

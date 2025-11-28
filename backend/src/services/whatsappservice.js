@@ -1,12 +1,16 @@
-import pkg from 'whatsapp-web.js';
-const { Client, LocalAuth, MessageMedia } = pkg;
 import qrcode from 'qrcode';
-import { hotPool } from '../db.js';
-import { sendLargeVideo } from './videoCompressor.js';
-import { enqueueCampaign, pauseCampaign as queuePauseCampaign, resumeCampaign as queueResumeCampaign, stopCampaign as queueStopCampaign, initializeCampaignQueue, recoverCampaigns } from './campaignQueue.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
+import os from 'os';
+import crypto from 'crypto';
+import puppeteerExtra from 'puppeteer-extra';
+import StealthPlugin from 'puppeteer-extra-plugin-stealth';
+import AnonymizeUAPlugin from 'puppeteer-extra-plugin-anonymize-ua';
+import Module from 'module';
+import { hotPool } from '../db.js';
+import { sendLargeVideo } from './videoCompressor.js';
+import { enqueueCampaign, pauseCampaign as queuePauseCampaign, resumeCampaign as queueResumeCampaign, stopCampaign as queueStopCampaign, initializeCampaignQueue, recoverCampaigns, registerWhatsAppDependencies } from './campaignQueue.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -21,13 +25,118 @@ let activeSessionId = null;
 let queueInitialized = false;
 let sessionTableEnsured = false;
 
+let Client;
+let LocalAuth;
+let MessageMedia;
+
+const DEFAULT_VIEWPORT = {
+  width: 1366,
+  height: 768,
+};
+
+const DEFAULT_USER_AGENT = process.env.WHATSAPP_DESKTOP_USER_AGENT || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
+
+let stealthPatched = false;
+let modulePatched = false;
+
+function ensureStealthPuppeteer() {
+  if (stealthPatched) {
+    return puppeteerExtra;
+  }
+
+  try {
+    const stealth = StealthPlugin();
+    // Some evasions break WhatsApp Web audio; disable cautiously
+    stealth.enabledEvasions.delete('iframe.contentWindow');
+    puppeteerExtra.use(stealth);
+    puppeteerExtra.use(AnonymizeUAPlugin({ stripHeadless: true, makeWindows: true }));
+    stealthPatched = true;
+    console.log('✅ Stealth plugins enabled for Puppeteer');
+  } catch (err) {
+    console.warn('⚠️ Failed to enable stealth plugins:', err?.message || err);
+  }
+
+  return puppeteerExtra;
+}
+
+function getStableClientId(dataPath) {
+  if (process.env.WHATSAPP_CLIENT_ID) {
+    return process.env.WHATSAPP_CLIENT_ID;
+  }
+  const normalized = path.resolve(dataPath);
+  return crypto.createHash('sha1').update(normalized).digest('hex').slice(0, 24);
+}
+
+function patchModuleLoader() {
+  if (modulePatched) return;
+  const originalLoad = Module._load;
+  Module._load = function patchedLoad(request, parent, isMain) {
+    if (request === 'puppeteer' || request === 'puppeteer-core') {
+      return ensureStealthPuppeteer();
+    }
+    return originalLoad(request, parent, isMain);
+  };
+  modulePatched = true;
+}
+
+async function ensureWhatsAppModules() {
+  if (Client && LocalAuth && MessageMedia) {
+    return;
+  }
+
+  patchModuleLoader();
+
+  const wweb = await import('whatsapp-web.js');
+  Client = wweb.Client;
+  LocalAuth = wweb.LocalAuth;
+  MessageMedia = wweb.MessageMedia;
+
+  registerWhatsAppDependencies({ MessageMedia });
+}
+
+function ensureDirectory(targetPath) {
+  try {
+    fs.mkdirSync(targetPath, { recursive: true });
+  } catch (err) {
+    if (err?.code !== 'EEXIST') {
+      console.warn('⚠️ Failed to ensure directory', targetPath, err?.message || err);
+    }
+  }
+  return targetPath;
+}
+
+function getPrimaryLocalAuthPath() {
+  if (process.env.WHATSAPP_DATA_PATH) {
+    const resolved = path.resolve(process.env.WHATSAPP_DATA_PATH);
+    return ensureDirectory(resolved);
+  }
+
+  const platform = process.platform;
+  let baseDir;
+
+  if (platform === 'win32') {
+    baseDir = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
+  } else if (platform === 'darwin') {
+    baseDir = path.join(os.homedir(), 'Library', 'Application Support');
+  } else {
+    baseDir = process.env.XDG_DATA_HOME || path.join(os.homedir(), '.local', 'share');
+  }
+
+  const sessionDir = path.join(baseDir, 'whatsapp-bulk-sender', 'session');
+  return ensureDirectory(sessionDir);
+}
+
 function getLocalAuthCandidates() {
   const candidates = new Set();
+  // Primary path actually used by the client
+  candidates.add(getPrimaryLocalAuthPath());
+  // Backwards-compat / extra locations that may contain old sessions
   if (process.env.WHATSAPP_DATA_PATH) {
     candidates.add(path.resolve(process.env.WHATSAPP_DATA_PATH));
   }
   candidates.add(path.resolve(process.cwd(), '.wwebjs_auth'));
   candidates.add(path.resolve(__dirname, '..', '..', '.wwebjs_auth'));
+
   return Array.from(candidates);
 }
 
@@ -132,15 +241,19 @@ async function initWhatsApp(_retry = false) {
   isInitializing = true;
 
   try {
-  
+    await ensureWhatsAppModules();
+
     if (client && !isReady && !isInitializing) {
       try { await client.destroy(); } catch (_) {}
       client = null;
     }
 
     const headless = process.env.HEADLESS === 'true';
-    const dataPath = process.env.WHATSAPP_DATA_PATH;
-    const authStrategy = dataPath ? new LocalAuth({ dataPath }) : new LocalAuth();
+    const dataPath = getPrimaryLocalAuthPath();
+    const authStrategy = new LocalAuth({ 
+      dataPath,
+      clientId: getStableClientId(dataPath),
+    });
     let executablePath = process.env.CHROME_BIN || undefined;
     if (process.platform === 'win32') {
       const candidates = [
@@ -159,6 +272,7 @@ async function initWhatsApp(_retry = false) {
       '--no-sandbox',
       '--disable-setuid-sandbox',
       '--disable-dev-shm-usage',
+      '--disable-blink-features=AutomationControlled',
       '--no-first-run',
       '--no-zygote',
       '--disable-background-timer-throttling',
@@ -166,14 +280,35 @@ async function initWhatsApp(_retry = false) {
       '--disable-renderer-backgrounding'
     ];
 
+    console.log('📂 Using WhatsApp LocalAuth path:', dataPath);
+
     client = new Client({
       authStrategy,
       puppeteer: {
         headless,
         executablePath,
-        args: baseArgs
-      }
+        args: baseArgs,
+        defaultViewport: DEFAULT_VIEWPORT,
+      },
+      userAgent: DEFAULT_USER_AGENT,
+      takeoverOnConflict: true,
+      takeoverTimeoutMs: 5000,
+      qrMaxRetries: 0,
+      authTimeoutMs: 0,
+      browserName: 'Chrome',
+      deviceName: process.env.WHATSAPP_DEVICE_NAME || 'Desktop WhatsApp Blast',
     });
+
+    const patchedPuppeteer = ensureStealthPuppeteer();
+    if (client?.options?.puppeteer && !client.options.puppeteer.puppeteer) {
+      client.options.puppeteer.puppeteer = patchedPuppeteer;
+    }
+
+    const authenticatedListener = () => {
+      console.log('🔐 WhatsApp authentication event received.');
+    };
+
+    client.on('authenticated', authenticatedListener);
 
     client.on('qr', async (qr) => {
       console.log('QR code received');
@@ -514,6 +649,8 @@ async function logoutWhatsApp() {
   // Clear local state first
   client = null;
   isReady = false;
+  queueInitialized = false;
+  qrCode = null;
   const currentNumber = activeNumber;
   const currentPushName = activePushName;
   activeNumber = null;
@@ -558,6 +695,46 @@ async function logoutWhatsApp() {
   }
 }
 
+async function disconnectWhatsApp() {
+  const currentClient = client;
+
+  if (!currentClient) {
+    return {
+      success: true,
+      message: 'WhatsApp client already stopped',
+      session: {
+        number: activeNumber,
+        pushName: activePushName,
+        sessionId: activeSessionId,
+      },
+    };
+  }
+
+  const sessionSnapshot = {
+    number: activeNumber,
+    pushName: activePushName,
+    sessionId: activeSessionId,
+  };
+
+  try {
+    await currentClient.destroy();
+  } catch (error) {
+    console.warn('⚠️ Failed to destroy WhatsApp client cleanly during disconnect:', error?.message || error);
+  }
+
+  client = null;
+  isReady = false;
+  isInitializing = false;
+  queueInitialized = false;
+  qrCode = null;
+
+  return {
+    success: true,
+    message: 'WhatsApp client stopped. Session remains linked – restart to continue.',
+    session: sessionSnapshot,
+  };
+}
+
 // Pause campaign using queue system
 export async function pauseCampaignService(campaignId) {
   return await queuePauseCampaign(campaignId);
@@ -574,4 +751,4 @@ export async function stopCampaignService(campaignId) {
   return await queueStopCampaign(campaignId);
 }
 
-export { initWhatsApp, getWhatsAppStatus, logoutWhatsApp, getClient, getActiveSessionId, clearLocalAuthProfile };
+export { initWhatsApp, getWhatsAppStatus, logoutWhatsApp, disconnectWhatsApp, getClient, getActiveSessionId, clearLocalAuthProfile };

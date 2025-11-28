@@ -5,7 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Upload, Phone, User, Mail, Database, Wand2 } from "lucide-react";
 import { apiService } from "@/services/api";
-import QRModal from "@/components/QRModal";
+
 import PgAdminSetupWizard from "@/components/PgAdminSetupWizard";
 
 export default function Settings() {
@@ -16,7 +16,6 @@ export default function Settings() {
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(true);
   const [waStatus, setWaStatus] = useState<{ ready: boolean; number?: string } | null>(null);
-  const [showQR, setShowQR] = useState(false);
   const [showSetupWizard, setShowSetupWizard] = useState(false);
 
   // User details card
@@ -107,8 +106,6 @@ export default function Settings() {
           </div>
         </CardContent>
       </Card>
-
-      
 
       {/* Database (Local PgAdmin) */}
       <Card className="bg-gradient-glass border-glass-border backdrop-blur-sm">
@@ -293,12 +290,16 @@ export default function Settings() {
               onClick={async () => {
                 try {
                   await apiService.whatsappInit();
-                } catch {}
-                setShowQR(true);
+                  const status = await apiService.getWhatsAppStatusLight();
+                  setWaStatus(status as any);
+                } catch (error) {
+                  console.error('Failed to launch WhatsApp session:', error);
+                }
               }}
             >
-              {waStatus?.ready ? 'Change Number (Scan QR)' : 'Connect (Scan QR)'}
+              {waStatus?.ready ? 'Reconnect WhatsApp' : 'Launch WhatsApp'}
             </Button>
+
             <Button
               variant="outline"
               onClick={async () => {
@@ -318,7 +319,7 @@ export default function Settings() {
                   await apiService.whatsappCleanProfile();
                   const status = await apiService.getWhatsAppStatusLight();
                   setWaStatus(status as any);
-                  alert('WhatsApp profile cleared. Please scan QR to connect again.');
+                  alert('WhatsApp profile cleared. Please launch WhatsApp again.');
                 } catch {
                   alert('Failed to clear profile');
                 }
@@ -329,10 +330,6 @@ export default function Settings() {
           </div>
         </CardContent>
       </Card>
-
-      <QRModal isOpen={showQR} onClose={() => setShowQR(false)} onReady={async () => { setShowQR(false); try { const status = await apiService.getWhatsAppStatusLight(); setWaStatus(status as any); } catch {} }} />
-
-      
 
       {/* Setup Wizard Modal */}
       <PgAdminSetupWizard

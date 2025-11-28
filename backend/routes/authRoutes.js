@@ -4,7 +4,6 @@ import { getLocalPool, hostPool, hotPool } from "../src/db.js";
 import { authenticateToken } from "../middleware/authMiddleware.js";
 import bcrypt from "bcryptjs";
 
-// Optional nodemailer import for OTP emails
 let nodemailer = null;
 try {
   nodemailer = (await import("nodemailer")).default;
