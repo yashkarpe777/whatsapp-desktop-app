@@ -30,6 +30,16 @@ export const authenticateToken = (req, res, next) => {
     console.log('✅ Token validated for user:', user.id || user.userId);
     return next();
   } catch (errPrimary) {
+    // Check if it's an expired token error
+    if (errPrimary.name === 'TokenExpiredError') {
+      console.log('⏰ Token expired for user:', errPrimary.expiredAt);
+      return res.status(401).json({
+        success: false,
+        message: 'Token expired - please login again',
+        code: 'TOKEN_EXPIRED'
+      });
+    }
+    
     if (secondary) {
       try {
         const userAlt = jwt.verify(token, secondary);

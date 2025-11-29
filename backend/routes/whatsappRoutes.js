@@ -47,32 +47,20 @@ router.post("/init", async (req, res) => {
 // Clean profile endpoint to remove saved LocalAuth data
 router.delete("/profile", async (req, res) => {
   try {
-    // Ensure the running client is fully stopped to release file locks
-    try { await logoutWhatsApp(); } catch {}
-
-    const candidates = [];
-    // WHATSAPP_DATA_PATH (exact)
-    if (process.env.WHATSAPP_DATA_PATH) candidates.push(process.env.WHATSAPP_DATA_PATH);
-    // CWD default
-    candidates.push(path.join(process.cwd(), '.wwebjs_auth'));
-    // Backend-root default (in case CWD differs)
-    const here = path.dirname(new URL(import.meta.url).pathname);
-    candidates.push(path.join(here, '..', '..', '.wwebjs_auth'));
-
-    let deletedAny = false;
-    for (const p of candidates) {
-      try {
-        await fs.promises.rm(p, { recursive: true, force: true });
-        deletedAny = true;
-      } catch {}
+    // This should only be called when user explicitly wants to logout
+    // Use the logout function instead for proper cleanup
+    const result = await logoutWhatsApp();
+    
+    if (result.success) {
+      res.json({ 
+        success: true, 
+        message: 'Profile cleared. You will need to scan QR again to reconnect.' 
+      });
+    } else {
+      res.status(500).json({ 
+        error: "Failed to clear profile: " + result.message 
+      });
     }
-
-    if (!deletedAny) {
-      // Even if nothing existed, treat as success (profile already clean)
-      return res.json({ success: true, message: 'No profile data found. You can connect now.' });
-    }
-
-    res.json({ success: true, message: 'Profile cleared. You will need to scan QR again.' });
   } catch (error) {
     console.error("Error clearing WhatsApp profile:", error);
     res.status(500).json({ error: "Failed to clear profile" });

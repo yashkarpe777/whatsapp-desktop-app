@@ -11,8 +11,36 @@ function getConfigDir() {
     try { fs.mkdirSync(fromEnv, { recursive: true }); } catch {}
     return fromEnv;
   }
+  
+  // In packaged Electron app, prioritize CONFIG_DIR from main process
+  if (process.env.CONFIG_DIR) {
+    const configDir = process.env.CONFIG_DIR;
+    try { fs.mkdirSync(configDir, { recursive: true }); } catch {}
+    console.log('✅ Using CONFIG_DIR from environment:', configDir);
+    return configDir;
+  }
+  
+  // Try multiple fallback locations
+  const fallbackPaths = [
+    path.join(__dirname, '..'), // backend/src -> backend
+    path.join(__dirname, '..', '..'), // backend/src -> project root
+    process.cwd(), // Current working directory
+  ];
+  
+  for (const fallback of fallbackPaths) {
+    try { 
+      fs.mkdirSync(fallback, { recursive: true }); 
+      const configPath = path.join(fallback, 'database_config.json');
+      if (fs.existsSync(configPath)) {
+        console.log('✅ Found database config at:', configPath);
+        return fallback;
+      }
+    } catch {}
+  }
+  
   const fallback = path.join(__dirname, '..');
   try { fs.mkdirSync(fallback, { recursive: true }); } catch {}
+  console.log('📁 Using fallback config directory:', fallback);
   return fallback;
 }
 
@@ -23,18 +51,22 @@ class DatabaseConfig {
     this.config = this.loadConfig();
   }
 
-  loadConfig() {
+loadConfig() {
     try {
+      console.log('🔍 Looking for database config at:', this.configPath);
       if (fs.existsSync(this.configPath)) {
         const data = fs.readFileSync(this.configPath, 'utf8');
         const config = JSON.parse(data);
         if (config && config.password !== undefined && config.password !== null) {
           config.password = String(config.password);
         }
+        console.log('✅ Database config loaded successfully');
         return config;
+      } else {
+        console.warn('⚠️ Database config file not found at:', this.configPath);
       }
     } catch (error) {
-      console.warn('Failed to load database config:', error.message);
+      console.warn('❌ Failed to load database config:', error.message);
     }
 
     // Fallback to env variables

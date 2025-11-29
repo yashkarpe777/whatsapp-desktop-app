@@ -100,16 +100,32 @@ class ApiService {
 
       if (!response.ok) {
         let detail = `HTTP error! status: ${response.status}`;
+        let errorCode = null;
         try {
           const ct = response.headers.get('content-type') || '';
           if (ct.includes('application/json')) {
             const j = await response.json();
             detail = j?.message || j?.error || detail;
+            errorCode = j?.code || null;
           } else {
             const t = await response.text();
             if (t) detail = t;
           }
         } catch {}
+
+        // Handle authentication errors specifically
+        if (response.status === 401 || errorCode === 'TOKEN_EXPIRED' || errorCode === 'INVALID_TOKEN') {
+          console.warn('Authentication failed - clearing token and redirecting to login');
+          localStorage.removeItem('token');
+          localStorage.removeItem('loginTime');
+          localStorage.removeItem('tokenExpiresAt');
+          
+          // Trigger a page reload to redirect to login
+          if (typeof window !== 'undefined') {
+            window.location.href = '/';
+          }
+        }
+
         throw new Error(detail);
       }
 
@@ -117,6 +133,12 @@ class ApiService {
       return await response.json();
     } catch (error: any) {
       clearTimeout(timeoutId);
+      
+      // Don't retry authentication errors
+      if (error.message?.includes('Token expired') || error.message?.includes('Invalid token')) {
+        console.error(`Authentication error for ${endpoint}:`, error.message);
+        throw error;
+      }
       
       // Retry on network errors or timeouts
       if (retries > 0 && (error.name === 'AbortError' || error.message?.includes('fetch') || error.message?.includes('network'))) {

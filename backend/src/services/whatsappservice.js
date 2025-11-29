@@ -100,20 +100,120 @@ async function ensureWhatsAppModules() {
 function ensureDirectory(targetPath) {
   try {
     fs.mkdirSync(targetPath, { recursive: true });
+    // Verify directory is writable
+    const testFile = path.join(targetPath, '.write-test');
+    fs.writeFileSync(testFile, 'test');
+    fs.unlinkSync(testFile);
+    console.log('✅ Directory is writable:', targetPath);
   } catch (err) {
     if (err?.code !== 'EEXIST') {
-      console.warn('⚠️ Failed to ensure directory', targetPath, err?.message || err);
+      console.error('❌ Failed to ensure directory', targetPath, err?.message || err);
+      throw new Error(`Cannot create or write to directory: ${targetPath}`);
     }
   }
   return targetPath;
 }
 
+async function checkDirectoryWritable(targetPath) {
+  try {
+    const testFile = path.join(targetPath, '.write-test-' + Date.now());
+    await fs.promises.writeFile(testFile, 'test');
+    await fs.promises.unlink(testFile);
+    return true;
+  } catch (err) {
+    return false;
+  }
+}
+
+function getWindowsRoamingRoot() {
+  const home = (typeof os.homedir === 'function' && os.homedir()) || process.env.USERPROFILE || '';
+  if (home) {
+    return path.join(home, 'AppData', 'Roaming');
+  }
+  if (process.env.APPDATA) {
+    return process.env.APPDATA;
+  }
+  return path.join(process.cwd(), 'AppData', 'Roaming');
+}
+
+function getAppScopedLocalAuthPath() {
+  if (process.platform !== 'win32') return null;
+  const appData = process.env.APPDATA;
+  if (!appData) return null;
+  return path.join(appData, 'whatsapp-bulk-sender', 'session');
+}
+
+function copyDirectorySync(source, destination) {
+  if (!source || !destination) return;
+  if (!fs.existsSync(source)) return;
+
+  let stats;
+  try {
+    stats = fs.statSync(source);
+  } catch (err) {
+    if (err?.code === 'ENOENT') return;
+    throw err;
+  }
+
+  if (!stats.isDirectory()) {
+    throw new Error(`Source path is not a directory: ${source}`);
+  }
+
+  fs.mkdirSync(destination, { recursive: true });
+  const entries = fs.readdirSync(source, { withFileTypes: true });
+  for (const entry of entries) {
+    const srcPath = path.join(source, entry.name);
+    const destPath = path.join(destination, entry.name);
+
+    if (entry.isDirectory()) {
+      copyDirectorySync(srcPath, destPath);
+    } else if (entry.isFile()) {
+      fs.copyFileSync(srcPath, destPath);
+    } else if (entry.isSymbolicLink()) {
+      try {
+        const linkTarget = fs.readlinkSync(srcPath);
+        try {
+          fs.symlinkSync(linkTarget, destPath);
+        } catch {
+          fs.copyFileSync(srcPath, destPath);
+        }
+      } catch {
+        fs.copyFileSync(srcPath, destPath);
+      }
+    }
+  }
+  console.log('📁 Successfully copied session directory from', source, 'to', destination);
+}
+
+function tryMigrateLocalAuthProfile(source, target) {
+  const src = path.resolve(source);
+  const dest = path.resolve(target);
+
+  if (src === dest) return false;
+  if (!fs.existsSync(src)) return false;
+
+  try {
+    copyDirectorySync(src, dest);
+    console.log('📁 Migrated WhatsApp session profile to stable path:', dest);
+    return true;
+  } catch (err) {
+    console.warn('⚠️ Failed to migrate WhatsApp session profile from', src, 'to', dest, err?.message || err);
+    return false;
+  }
+}
+
 function resolveDefaultLocalAuthPath() {
+  // In production (packaged app), prioritize WHATSAPP_DATA_PATH from Electron main process
+  if (process.env.WHATSAPP_DATA_PATH && !process.env.ELECTRON_DEV) {
+    return process.env.WHATSAPP_DATA_PATH;
+  }
+
   const platform = process.platform;
   let baseDir;
 
   if (platform === 'win32') {
-    baseDir = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
+    // Always use the user's roaming profile, ignore app-scoped APPDATA so dev, CLI and Electron share the same path
+    baseDir = getWindowsRoamingRoot();
   } else if (platform === 'darwin') {
     baseDir = path.join(os.homedir(), 'Library', 'Application Support');
   } else {
@@ -128,7 +228,12 @@ function collectLocalAuthCandidates() {
   if (process.env.WHATSAPP_DATA_PATH) {
     set.add(path.resolve(process.env.WHATSAPP_DATA_PATH));
   }
-  set.add(path.resolve(resolveDefaultLocalAuthPath()));
+  const defaultPath = resolveDefaultLocalAuthPath();
+  set.add(path.resolve(defaultPath));
+  const appScopedPath = getAppScopedLocalAuthPath();
+  if (appScopedPath) {
+    set.add(path.resolve(appScopedPath));
+  }
   set.add(path.resolve(process.cwd(), '.wwebjs_auth'));
   set.add(path.resolve(__dirname, '..', '..', '.wwebjs_auth'));
   return Array.from(set);
@@ -154,21 +259,27 @@ function hasLocalAuthProfile(candidatePath) {
 }
 
 function getPrimaryLocalAuthPath() {
-  const candidates = collectLocalAuthCandidates();
-  for (const candidate of candidates) {
-    const normalized = path.resolve(candidate);
-    if (hasLocalAuthProfile(normalized)) {
-      ensureDirectory(normalized);
-      if (process.env.WHATSAPP_DATA_PATH !== normalized) {
-        process.env.WHATSAPP_DATA_PATH = normalized;
-      }
-      console.log('📁 Reusing existing WhatsApp session profile at:', normalized);
-      return normalized;
-    }
+  // In production (packaged app), prioritize WHATSAPP_DATA_PATH from Electron main process
+  if (process.env.WHATSAPP_DATA_PATH) {
+    console.log('📂 Using WHATSAPP_DATA_PATH from environment:', process.env.WHATSAPP_DATA_PATH);
+    return process.env.WHATSAPP_DATA_PATH;
   }
 
-  const target = candidates[0] || resolveDefaultLocalAuthPath();
-  return ensureDirectory(target);
+  const platform = process.platform;
+  let baseDir;
+
+  if (platform === 'win32') {
+    // Always use the user's roaming profile for consistency across dev/production
+    baseDir = getWindowsRoamingRoot();
+  } else if (platform === 'darwin') {
+    baseDir = path.join(os.homedir(), 'Library', 'Application Support');
+  } else {
+    baseDir = process.env.XDG_DATA_HOME || path.join(os.homedir(), '.local', 'share');
+  }
+
+  const sessionPath = path.join(baseDir, 'whatsapp-bulk-sender', 'session');
+  console.log('📂 Using default session path:', sessionPath);
+  return sessionPath;
 }
 
 function getLocalAuthCandidates() {
@@ -278,6 +389,7 @@ function getDb() {
 
 async function ensureSessionTable() {
   if (sessionTableEnsured) return true;
+  
   const ddlStatements = [
     `CREATE TABLE IF NOT EXISTS whatsapp_sessions (
       id SERIAL PRIMARY KEY,
@@ -293,42 +405,120 @@ async function ensureSessionTable() {
   ];
 
   try {
+    console.log('🔍 Ensuring whatsapp_sessions table exists...');
     for (const stmt of ddlStatements) {
       await hotPool.query(stmt);
+      console.log('✅ Executed DDL:', stmt.split('(')[0]);
     }
     sessionTableEnsured = true;
-    console.log('✅ whatsapp_sessions table ensured');
+    console.log('✅ whatsapp_sessions table ensured successfully');
     return true;
   } catch (error) {
     console.warn('⚠️ Failed to ensure whatsapp_sessions table:', error.message);
+    console.warn('⚠️ Error details:', error.code, error.detail);
     return false;
   }
 }
 
+async function cleanupChromeProcesses() {
+  if (process.platform !== 'win32') return;
+  
+  try {
+    const { exec } = await import('child_process');
+    console.log('🧹 Checking for orphaned Chrome processes...');
+    
+    // Kill Chrome processes that might be left from previous crashes
+    exec('taskkill /f /im chrome.exe /fi "WINDOWTITLE eq*" 2>nul && echo Cleaned up Chrome processes', (error, stdout) => {
+      if (!error) {
+        console.log('🧹 Chrome process cleanup completed');
+      }
+    });
+  } catch (err) {
+    console.warn('⚠️ Chrome cleanup failed:', err.message);
+  }
+}
+
 async function initWhatsApp(_retry = false) {
-  if (client && (isReady || isInitializing)) return;
-  if (isInitializing) return;
+  // IMPORTANT: Don't reinitialize if already ready or initializing
+  if (isReady) {
+    console.log('✅ WhatsApp client already ready');
+    return;
+  }
+  
+  if (isInitializing) {
+    console.log('⏳ WhatsApp client already initializing');
+    return;
+  }
 
   isInitializing = true;
+
+  // Clean up orphaned Chrome processes before starting
+  if (!_retry) {
+    await cleanupChromeProcesses();
+  }
+
+  // Check for potential conflicts and clean up excess Chrome processes
+  try {
+    const { exec } = await import('child_process');
+    const platform = process.platform;
+    
+    if (platform === 'win32') {
+      exec('tasklist /fi "imagename eq chrome.exe" /fo csv | find /c "chrome.exe"', (error, stdout) => {
+        const chromeCount = parseInt(stdout.trim()) || 0;
+        if (chromeCount > 10) {
+          console.warn(`⚠️ High Chrome process count detected: ${chromeCount}. Attempting to clean up excess processes...`);
+          // Kill orphaned Chrome processes to prevent conflicts
+          exec('taskkill /f /im chrome.exe /fi "WINDOWTITLE eq*" 2>nul', (killError) => {
+            if (!killError) {
+              console.log('🧹 Cleaned up excess Chrome processes');
+            }
+          });
+        } else if (chromeCount > 5) {
+          console.warn(`⚠️ Moderate Chrome process count: ${chromeCount}. This may cause WhatsApp conflicts.`);
+        }
+      });
+    }
+  } catch (err) {
+    console.log('Could not check for process conflicts:', err.message);
+  }
 
   try {
     await ensureWhatsAppModules();
 
-    if (client && !isReady && !isInitializing) {
-      try { await client.destroy(); } catch (_) {}
+    // Only destroy existing client if it's not ready
+    if (client && !isReady) {
+      try { 
+        console.log('🔄 Destroying existing WhatsApp client');
+        await client.destroy(); 
+      } catch (_) {}
       client = null;
+    }
+
+    // Check if we have existing session data to preserve
+    const dataPath = getPrimaryLocalAuthPath();
+    const hasExistingSession = hasLocalAuthProfile(dataPath);
+    if (hasExistingSession) {
+      console.log('📱 Found existing WhatsApp session, attempting to restore...');
     }
 
     const headlessEnv = String(process.env.HEADLESS || 'false').toLowerCase();
     const prefersHeadless = headlessEnv === 'true';
     const headless = _retry ? true : prefersHeadless;
 
-    const dataPath = getPrimaryLocalAuthPath();
     await pruneExtraLocalAuthProfiles(dataPath, { maxAttempts: 3, delayMs: 500 });
+    
+    // Ensure the session directory exists and is writable
+    ensureDirectory(dataPath);
+    
+    // Create auth strategy with session persistence
     const authStrategy = new LocalAuth({ 
       dataPath,
       clientId: getStableClientId(dataPath),
     });
+
+    console.log('🔐 Initializing WhatsApp with LocalAuth path:', dataPath);
+    console.log('📂 Session directory exists:', fs.existsSync(dataPath));
+    console.log('📂 Session directory writable:', await checkDirectoryWritable(dataPath));
     let executablePath = process.env.CHROME_BIN || undefined;
     if (process.platform === 'win32') {
       const candidates = [
@@ -343,7 +533,7 @@ async function initWhatsApp(_retry = false) {
       }
     }
 
-    const baseArgs = [
+const baseArgs = [
       '--no-sandbox',
       '--disable-setuid-sandbox',
       '--disable-dev-shm-usage',
@@ -352,24 +542,53 @@ async function initWhatsApp(_retry = false) {
       '--no-zygote',
       '--disable-background-timer-throttling',
       '--disable-backgrounding-occluded-windows',
-      '--disable-renderer-backgrounding'
+      '--disable-renderer-backgrounding',
+      '--disable-features=TranslateUI',
+      '--disable-ipc-flooding-protection',
+      '--disable-logging',
+      '--disable-web-security',
+      '--disable-features=VizDisplayCompositor',
+      '--disable-session-crashed-bubble',
+      '--disable-infobars',
+      '--disable-restore-session-state',
+      '--single-process', // Run in single process to reduce conflicts
+      '--no-zygote', // Prevent multiple process spawning
+      '--disable-gpu', // Disable GPU acceleration
+      '--disable-software-rasterizer',
+      '--disable-background-networking',
+      '--disable-default-apps',
+      '--disable-extensions',
+      '--disable-sync',
+      '--disable-translate',
+      '--hide-crash-restore-bubble',
+      '--no-default-browser-check',
+      '--disable-hang-monitor'
     ];
 
     console.log('📂 Using WhatsApp LocalAuth path:', dataPath);
+    console.log('🔍 Session files check:', {
+      path: dataPath,
+      exists: fs.existsSync(dataPath),
+      hasSettings: fs.existsSync(path.join(dataPath, 'session.settings.json')),
+      hasLocalStorage: fs.existsSync(path.join(dataPath, 'Default', 'Local Storage'))
+    });
 
-    client = new Client({
+client = new Client({
       authStrategy,
       puppeteer: {
         headless,
         executablePath,
         args: baseArgs,
         defaultViewport: DEFAULT_VIEWPORT,
+        timeout: 30000, // Reduce puppeteer timeout
+        slowMo: 0 // Remove slow motion delays
       },
       userAgent: DEFAULT_USER_AGENT,
-      takeoverOnConflict: true,
-      takeoverTimeoutMs: 5000,
-      qrMaxRetries: 0,
-      authTimeoutMs: 0,
+      takeoverOnConflict: false, // IMPORTANT: Don't auto-takeover to prevent logout
+      qrMaxRetries: 3, // Reduce QR retries to prevent hanging
+      authTimeoutMs: 60000, // Reduce to 1 minute to prevent long hangs
+      restartOnAuthFail: false, // IMPORTANT: Don't auto-restart to prevent logout
+      takeoverTimeoutMs: 30000, // Reduce takeover timeout
       browserName: 'Chrome',
       deviceName: process.env.WHATSAPP_DEVICE_NAME || 'Desktop WhatsApp Blast',
     });
@@ -385,17 +604,18 @@ async function initWhatsApp(_retry = false) {
 
     client.on('authenticated', authenticatedListener);
 
-    client.on('qr', async (qr) => {
-      console.log('QR code received');
+client.on('qr', async (qr) => {
+      console.log('📱 QR code received - scan with WhatsApp mobile app');
       try {
         qrCode = await qrcode.toDataURL(qr);
+        // Don't clear session info on QR - user might be reconnecting
       } catch (qrError) {
         console.error('Error generating QR code:', qrError);
         qrCode = null;
       }
     });
 
-    client.on('ready', async () => {
+client.on('ready', async () => {
       console.log('✅ WhatsApp client is ready');
       isReady = true;
       qrCode = null;
@@ -408,8 +628,25 @@ async function initWhatsApp(_retry = false) {
         activePushName = info?.pushname || null;
         activeSessionId = wid;
 
-        // Save session info to database
-        await saveSessionInfo(wid, activeNumber, activePushName);
+        console.log(`📱 WhatsApp ready for user: ${activePushName} (${activeNumber})`);
+        console.log('💾 WhatsApp session successfully restored and active');
+        console.log('📂 Session data path:', dataPath);
+
+        // Save session info to database with retry
+        try {
+          await saveSessionInfo(wid, activeNumber, activePushName);
+        } catch (saveError) {
+          console.warn('⚠️ Failed to save session info on first attempt, retrying...', saveError.message);
+          // Wait a bit and retry
+          setTimeout(async () => {
+            try {
+              await saveSessionInfo(wid, activeNumber, activePushName);
+              console.log('✅ Session info saved on retry');
+            } catch (retryError) {
+              console.error('❌ Failed to save session info on retry:', retryError.message);
+            }
+          }, 3000);
+        }
 
         // Initialize campaign queue processor
         if (!queueInitialized) {
@@ -432,11 +669,26 @@ async function initWhatsApp(_retry = false) {
       }
     });
 
-    client.on('disconnected', async (reason) => {
+client.on('disconnected', async (reason) => {
       console.log(`❌ WhatsApp client disconnected. Reason: ${reason}`);
-      console.log('⚠️  Disconnected, but keeping session active for potential reconnection');
-
-      const sessionToMarkInactive = activeSessionId;
+      
+      // Check if this is a LOGOUT (session invalidation) vs temporary disconnect
+      const isLogout = String(reason).toUpperCase() === 'LOGOUT';
+      
+      if (isLogout) {
+        console.log('🚪 WhatsApp session was logged out - session data is invalid');
+        // Clear session data on logout to force fresh QR scan
+        try {
+          const dataPath = getPrimaryLocalAuthPath();
+          console.log('🗑️ Clearing corrupted session data at:', dataPath);
+          await removeDirectoryWithRetries(dataPath, { maxAttempts: 3, delayMs: 500 });
+        } catch (err) {
+          console.warn('⚠️ Failed to clear session data:', err.message);
+        }
+      } else {
+        console.log('📱 Temporary disconnect - preserving session');
+      }
+      
       const currentClient = client;
 
       if (currentClient) {
@@ -447,48 +699,94 @@ async function initWhatsApp(_retry = false) {
         }
       }
 
-      // Don't destroy the client immediately to allow for reconnection
+      // Clear client state
       client = null;
       isReady = false;
       isInitializing = false;
-
-      // Try to reconnect after a delay
-      console.log('🔄 Attempting to reconnect in 5 seconds...');
-      setTimeout(() => {
-        console.log('🔄 Attempting to reconnect...');
-        initWhatsApp().catch(err => {
-          console.error('❌ Reconnection failed:', err);
-        });
-      }, 5000);
-
-      // Keep the active session info to allow for reconnection
-      // activeNumber and activeSessionId are kept to maintain session state
-      isInitializing = false;
       queueInitialized = false;
 
-      if (sessionToMarkInactive) {
-        try {
-          await markSessionInactive(sessionToMarkInactive);
-        } catch (err) {
-          console.warn('⚠️ Failed to mark session inactive on disconnect:', err?.message || err);
-        }
+      // For logout, clear session info to force fresh login
+      if (isLogout) {
+        activeNumber = null;
+        activePushName = null;
+        activeSessionId = null;
+        console.log('🔄 Session cleared - will require QR scan on reconnect');
       }
+
+      // In production builds, wait longer before reconnect to avoid rapid reconnection loops
+      const reconnectDelay = process.env.ELECTRON_DEV === 'true' ? 3000 : (isLogout ? 10000 : 8000);
+      
+      console.log(`🔄 Attempting to reconnect in ${reconnectDelay/1000} seconds...`);
+      
+      setTimeout(() => {
+        console.log('🔄 Reconnecting WhatsApp...');
+        initWhatsApp().catch(err => {
+          console.error('❌ Reconnection failed:', err);
+          // Try again with longer delay
+          setTimeout(() => {
+            console.log('🔄 Retrying WhatsApp reconnection...');
+            initWhatsApp().catch(err2 => {
+              console.error('❌ WhatsApp reconnection failed after retry:', err2);
+              // Final retry with even longer delay
+              setTimeout(() => {
+                console.log('🔄 Final WhatsApp reconnection attempt...');
+                initWhatsApp().catch(err3 => {
+                  console.error('❌ All WhatsApp reconnection attempts failed:', err3);
+                });
+              }, reconnectDelay * 3);
+            });
+          }, reconnectDelay * 2);
+        });
+      }, reconnectDelay);
+
+      console.log(`📱 Session ${isLogout ? 'cleared' : 'preserved'} for reconnection`);
     });
 
-    client.on('auth_failure', () => {
-      console.log('❌ WhatsApp authentication failed');
+client.on('auth_failure', (message) => {
+      console.log('❌ WhatsApp authentication failed:', message);
+      console.log('🔄 NOT clearing session - will attempt reconnection');
       isInitializing = false;
+      
+      // IMPORTANT: Don't clear session data on auth failure
+      // This preserves the session for automatic recovery
+      qrCode = null;
+      // Keep session data to allow recovery
+      // activeNumber = null;
+      // activePushName = null;
+      // activeSessionId = null;
     });
 
-    await client.initialize();
+    // Add initialization timeout
+    const initPromise = client.initialize();
+    const timeoutPromise = new Promise((_, reject) => {
+      setTimeout(() => reject(new Error('WhatsApp initialization timeout')), 45000);
+    });
+    
+    await Promise.race([initPromise, timeoutPromise]);
+    console.log('✅ WhatsApp client initialization completed');
   } catch (error) {
     console.error('❌ Failed to initialize WhatsApp client:', error.message);
     isInitializing = false;
-    if (!_retry && /Target closed/i.test(String(error?.message || ''))) {
+    
+    // Clean up on failure
+    if (client) {
       try {
+        await client.destroy();
+      } catch (destroyErr) {
+        console.warn('⚠️ Failed to destroy client during cleanup:', destroyErr.message);
+      }
+      client = null;
+    }
+    
+    if (!_retry && /Target closed|timeout/i.test(String(error?.message || ''))) {
+      console.log('🔄 Retrying initialization with headless mode...');
+      try {
+        await new Promise(resolve => setTimeout(resolve, 2000)); // Wait before retry
         await initWhatsApp(true);
         return;
-      } catch (_) {}
+      } catch (retryErr) {
+        console.error('❌ Retry initialization failed:', retryErr.message);
+      }
     }
     throw error;
   }
@@ -629,6 +927,9 @@ function getWhatsAppStatus() {
 
 async function saveSessionInfo(sessionId, phoneNumber, pushName) {
   try {
+    // First ensure the session table exists
+    await ensureSessionTable();
+    
     await hotPool.query(
       `INSERT INTO whatsapp_sessions (session_id, phone_number, push_name, is_active, last_seen)
        VALUES ($1, $2, $3, true, CURRENT_TIMESTAMP)
@@ -638,25 +939,23 @@ async function saveSessionInfo(sessionId, phoneNumber, pushName) {
     );
     console.log('✅ Session info saved:', sessionId);
   } catch (error) {
-    if (error?.code === '42P01') {
-      const ensured = await ensureSessionTable();
-      if (ensured) {
-        try {
-          await hotPool.query(
-            `INSERT INTO whatsapp_sessions (session_id, phone_number, push_name, is_active, last_seen)
-             VALUES ($1, $2, $3, true, CURRENT_TIMESTAMP)
-             ON CONFLICT (session_id)
-             DO UPDATE SET phone_number = $2, push_name = $3, is_active = true, last_seen = CURRENT_TIMESTAMP`,
-            [sessionId, phoneNumber, pushName]
-          );
-          console.log('✅ Session info saved after ensuring table:', sessionId);
-          return;
-        } catch (retryErr) {
-          console.warn('⚠️ Retry save session info failed:', retryErr.message);
-        }
-      }
-    }
     console.warn('⚠️ Could not save session info:', error.message);
+    console.warn('⚠️ Session details:', { sessionId, phoneNumber, pushName });
+    
+    // Try to create table manually if it doesn't exist
+    try {
+      await ensureSessionTable();
+      await hotPool.query(
+        `INSERT INTO whatsapp_sessions (session_id, phone_number, push_name, is_active, last_seen)
+         VALUES ($1, $2, $3, true, CURRENT_TIMESTAMP)
+         ON CONFLICT (session_id)
+         DO UPDATE SET phone_number = $2, push_name = $3, is_active = true, last_seen = CURRENT_TIMESTAMP`,
+        [sessionId, phoneNumber, pushName]
+      );
+      console.log('✅ Session info saved after manual table creation:', sessionId);
+    } catch (retryErr) {
+      console.error('❌ Failed to save session info after retry:', retryErr.message);
+    }
   }
 }
 
@@ -720,17 +1019,6 @@ async function logoutWhatsApp() {
   const currentClient = client;
   const sessionToLogout = activeSessionId;
   
-  // Clear local state first
-  client = null;
-  isReady = false;
-  queueInitialized = false;
-  qrCode = null;
-  const currentNumber = activeNumber;
-  const currentPushName = activePushName;
-  activeNumber = null;
-  activePushName = null;
-  activeSessionId = null;
-  
   try {
     // If we have a client, try to log out gracefully
     if (currentClient) {
@@ -741,14 +1029,35 @@ async function logoutWhatsApp() {
       }
     }
     
+    // Clear LocalAuth data to force logout from phone
+    const dataPath = getPrimaryLocalAuthPath();
+    try {
+      await removeDirectoryWithRetries(dataPath, { maxAttempts: 3, delayMs: 500 });
+      console.log('🗑️ WhatsApp LocalAuth data cleared - user will need to scan QR again');
+    } catch (err) {
+      console.warn('⚠️ Failed to clear LocalAuth data:', err?.message || err);
+    }
+    
     // Mark session as inactive in the database
     if (sessionToLogout) {
       await markSessionInactive(sessionToLogout);
     }
     
+    // Clear local state AFTER successful logout
+    const currentNumber = activeNumber;
+    const currentPushName = activePushName;
+    
+    client = null;
+    isReady = false;
+    queueInitialized = false;
+    qrCode = null;
+    activeNumber = null;
+    activePushName = null;
+    activeSessionId = null;
+    
     return { 
       success: true, 
-      message: 'Successfully logged out',
+      message: 'Successfully logged out - please scan QR again to reconnect',
       session: {
         number: currentNumber,
         pushName: currentPushName,
@@ -759,11 +1068,11 @@ async function logoutWhatsApp() {
     console.error('Error during logout cleanup:', error);
     return { 
       success: false, 
-      message: 'Logged out but encountered error during cleanup: ' + error.message,
+      message: 'Logout failed: ' + error.message,
       session: {
-        number: currentNumber,
-        pushName: currentPushName,
-        sessionId: sessionToLogout
+        number: activeNumber,
+        pushName: activePushName,
+        sessionId: activeSessionId
       }
     };
   }
@@ -796,11 +1105,16 @@ async function disconnectWhatsApp() {
     console.warn('⚠️ Failed to destroy WhatsApp client cleanly during disconnect:', error?.message || error);
   }
 
+  // IMPORTANT: Keep session info for reconnection
+  // Only clear client state, not session state
   client = null;
   isReady = false;
   isInitializing = false;
   queueInitialized = false;
   qrCode = null;
+  
+  // DO NOT clear activeNumber, activePushName, activeSessionId
+  // This preserves the session for automatic reconnection
 
   return {
     success: true,

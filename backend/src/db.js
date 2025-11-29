@@ -77,6 +77,15 @@ function buildLocalPool() {
   delete process.env.PGPASSWORD;
   delete process.env.PGDATABASE;
   const localOverride = databaseConfig.getConfig();
+  
+  console.log('🔍 Local DB config check:', {
+    hasConfig: !!localOverride,
+    host: localOverride?.host,
+    user: localOverride?.user,
+    database: localOverride?.database,
+    disableLocalDb,
+    serviceMode
+  });
 
   const urlRaw = (localOverride?.connectionString) || "";
   const preferDiscrete = Boolean(localOverride?.host);
@@ -107,10 +116,9 @@ function buildLocalPool() {
       return new Pool({ connectionString: urlRaw, ssl: useSsl, ...commonPool });
     }
   }
-  if (!localOverride || (!urlRaw && !localOverride.host)) {
-    if ((process.env.DEBUG_API || '').toLowerCase() === 'true') {
-      console.warn('No local database configuration provided; skipping local database pool');
-    }
+if (!localOverride || (!urlRaw && !localOverride.host)) {
+    console.warn('⚠️ No local database configuration provided; skipping local database pool');
+    console.warn('⚠️ Database config file path:', databaseConfig.configPath);
     return null;
   }
   const cfg = {
@@ -142,12 +150,29 @@ function buildLocalPool() {
 let hostPool = buildHostPool();
 let localPool = buildLocalPool();
 export function getActivePool() {
-  return getLocalPool() || hostPool || null;
+  const local = getLocalPool();
+  if (local) {
+    console.log('✅ Using local database pool');
+    return local;
+  }
+  if (hostPool) {
+    console.log('✅ Using host database pool');
+    return hostPool;
+  }
+  console.log('❌ No database pool available');
+  return null;
 }
 export const hotPool = {
   async query(...args) {
     const p = getActivePool();
-    if (!p) throw new Error('No active database pool');
+    if (!p) {
+      console.error('❌ No active database pool available for query');
+      console.error('❌ Local pool exists:', !!localPool);
+      console.error('❌ Host pool exists:', !!hostPool);
+      console.error('❌ Disable local DB:', disableLocalDb);
+      console.error('❌ Service mode:', serviceMode);
+      throw new Error('No active database pool');
+    }
     return p.query(...args);
   }
 };
@@ -480,6 +505,11 @@ if (!disableLocalDb) {
   const initializeLocalWithRetry = async (retries = 3) => {
     for (let i = 0; i < retries; i++) {
       try {
+        if (!localPool) {
+          console.warn(`⚠️  Local database pool not available for initialization attempt ${i + 1}`);
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          continue;
+        }
         await initializeLocalDatabase(localPool);
         console.log('✅ Local database initialized successfully');
         return true;
@@ -496,7 +526,10 @@ if (!disableLocalDb) {
     return false;
   };
 
-  initializeLocalWithRetry();
+  // Wait a bit for pools to be built before initializing
+  setTimeout(() => {
+    initializeLocalWithRetry();
+  }, 1000);
 } else {
   console.log('⏭️  Skipping local database initialization (disabled)');
 }

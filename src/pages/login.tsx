@@ -17,21 +17,21 @@ const Login = () => {
   const navigate = useNavigate();
   const { toast } = useToast();
 
-  useEffect(() => {
+useEffect(() => {
     const token = localStorage.getItem('token');
     if (token) {
       navigate('/app', { replace: true });
     }
   }, [navigate]);
 
-  const handleLogin = async (e: React.FormEvent) => {
+const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
     try {
       const res = await apiService.loginPassword(username.trim(), password);
       if (res?.token) {
         localStorage.setItem('token', res.token);
-        localStorage.setItem('loginTime', Date.now().toString()); // Track login time
+        localStorage.setItem('loginTime', Date.now().toString());
       }
       // Auto-detect role from token/server; the selectedRole here is only visual
       toast({ title: "Welcome", description: `Signed in as ${res?.user?.username || username}` });

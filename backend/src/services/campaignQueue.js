@@ -327,7 +327,7 @@ export function initializeCampaignQueue(whatsappClient) {
                   await new Promise(resolve => setTimeout(resolve, 1000));
                 }
                 
-                // Then send video as document (without caption to reduce load)
+                // Then send video as document (without caption to avoid duplicate)
                 media = MessageMedia.fromFilePath(mediaFullPath);
                 await whatsappClient.sendMessage(chatId, media, { 
                   sendMediaAsDocument: true 
@@ -696,6 +696,15 @@ export async function recoverCampaigns() {
   console.log('🔄 Recovering campaigns after restart...');
 
   try {
+    // Check if database is available first
+    try {
+      await hotPool.query('SELECT 1');
+      console.log('✅ Database connection available for campaign recovery');
+    } catch (dbError) {
+      console.warn('⚠️ Database not available for campaign recovery:', dbError.message);
+      return { success: false, error: 'Database not available', recovered: 0 };
+    }
+
     // Find campaigns that were running when app crashed
     const result = await hotPool.query(`
       SELECT id FROM campaigns

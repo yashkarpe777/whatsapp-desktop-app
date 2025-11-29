@@ -3,7 +3,7 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { requireLocalDB, checkLocalDB } from '../middleware/dbHealthCheck.js';
+import { requireLocalDB, checkLocalDB } from './middleware/dbHealthCheck.js';
 
 // Import routes
 import authRoutes from '../routes/authRoutes.js';
@@ -16,7 +16,7 @@ import settingsRoutes from '../routes/settingsRoutes.js';
 import coinsRoutes from '../routes/coinsRoutes.js';
 
 // Resume engine
-import pool, { hostPool, localPool, rebuildPool, isLocalPoolConnected, getLocalPool } from './db.js';
+import { hostPool, localPool, rebuildPool, isLocalPoolConnected, getLocalPool, hotPool } from './db.js';
 import { sendCampaign, initWhatsApp } from './services/whatsappservice.js';
 import { recoverCampaigns, cleanupQueue } from './services/campaignQueue.js';
 import { runCleanup } from './services/cleanupService.js';
@@ -149,8 +149,8 @@ if ((process.env.DEBUG_API || '').toLowerCase() === 'true' || (process.env.NODE_
 // Do not initialize WhatsApp on server start. Initialization is triggered lazily
 // from routes (e.g., /api/whatsapp/qr) or when starting a campaign.
 
-// Start server
-app.listen(PORT, () => {
+// Start server with error handling
+const server = app.listen(PORT, () => {
   const svc = process.env.SERVICE_MODE || 'all';
   const emailSet = Boolean(process.env.EMAIL_USER) && Boolean(process.env.EMAIL_PASS);
   const dbUrl = process.env.DATABASE_URL || '';
@@ -172,15 +172,17 @@ app.listen(PORT, () => {
   if (isCoinsOnly) {
     console.log('⏭️  Coins-only mode active – skipping campaign recovery and cleanup schedulers');
   } else {
-    // Campaign recovery: resume any running campaigns after restart
+// Campaign recovery: resume any running campaigns after restart
     setTimeout(async () => {
       console.log('🔄 Starting campaign recovery...');
       try {
+        // Wait a bit more for database to be fully ready
+        await new Promise(resolve => setTimeout(resolve, 3000));
         await recoverCampaigns();
       } catch (error) {
         console.error('❌ Campaign recovery failed:', error.message);
       }
-    }, 5000);
+    }, 10000);
 
     // Run cleanup on startup and then daily
     setTimeout(runCleanup, 10000);
@@ -188,6 +190,30 @@ app.listen(PORT, () => {
     // Clean up queue periodically
     setInterval(cleanupQueue, 24 * 60 * 60 * 1000); // Daily
   }
+}).on('error', (err) => {
+  if (err.code === 'EADDRINUSE') {
+    console.error(`❌ Port ${PORT} is already in use`);
+    console.error('Try killing the process:');
+    if (process.platform === 'win32') {
+      console.error(`  netstat -ano | findstr :${PORT}`);
+      console.error(`  taskkill /PID <PID> /F`);
+    } else {
+      console.error(`  lsof -ti :${PORT} | xargs kill -9`);
+    }
+    process.exit(1);
+  } else {
+    console.error('Server error:', err);
+    process.exit(1);
+  }
+});
+
+// Graceful shutdown
+process.on('SIGINT', () => {
+  console.log('🛑 Shutting down gracefully...');
+  server.close(() => {
+    console.log('✅ Server closed');
+    process.exit(0);
+  });
 });
 
 // Lightweight crash-resume engine using Postgres advisory locks
@@ -195,13 +221,13 @@ const inflight = new Set();
 
 async function tryWithPgLock(campaignId, fn) {
   const lockKey = Number(campaignId);
-  const lockRes = await pool.query('SELECT pg_try_advisory_lock($1) AS locked', [lockKey]);
+  const lockRes = await hotPool.query('SELECT pg_try_advisory_lock($1) AS locked', [lockKey]);
   const locked = lockRes.rows?.[0]?.locked === true;
   if (!locked) return false;
   try {
     await fn();
   } finally {
-    try { await pool.query('SELECT pg_advisory_unlock($1)', [lockKey]); } catch {}
+    try { await hotPool.query('SELECT pg_advisory_unlock($1)', [lockKey]); } catch {}
   }
   return true;
 }

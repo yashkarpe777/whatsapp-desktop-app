@@ -10,8 +10,8 @@
     "build:dev": "vite build --mode development",
     "lint": "eslint .",
     "preview": "vite preview",
-    "backend:start": "cross-env PORT=3000 JWT_SECRET=devsecret ADMIN_API_BASE_URL=https://bulk-whatsapp-sender-desktopapp.onrender.com node backend/src/server.js",
-    "backend:dev": "cross-env PORT=3000 JWT_SECRET=devsecret ADMIN_API_BASE_URL=https://bulk-whatsapp-sender-desktopapp.onrender.com node backend/src/server.js",
+    "backend:start": "cross-env PORT=3000 JWT_SECRET=devsecret ADMIN_API_BASE_URL=https://bulk-whatsapp-sender-desktopapp.onrender.com node backend/src/server.mjs",
+    "backend:dev": "cross-env PORT=3000 JWT_SECRET=devsecret ADMIN_API_BASE_URL=https://bulk-whatsapp-sender-desktopapp.onrender.com node backend/src/server.mjs",
     "dev:full": "concurrently -k \"vite --port 8080 --host 127.0.0.1\" \"npm run backend:dev\"",
     "desktop:dev": "cross-env ELECTRON_DEV=true concurrently -k \"vite --port 8080 --host 127.0.0.1\" \"npm run backend:dev\" \"wait-on http://127.0.0.1:8080 http://127.0.0.1:3000/health && electron .\"",
     "desktop:build": "vite build && electron-builder -w",
@@ -121,8 +121,8 @@
     "asarUnpack": [
       "node_modules/puppeteer-core/**",
       "node_modules/ffmpeg-static/**",
-      "node_modules/**/build/**",
-      "node_modules/**/{*.node,*.dll}"
+      "node_modules/whatsapp-web.js/**",
+      "node_modules/**/build/**"
     ],
     "directories": {
       "output": "release",
@@ -141,11 +141,11 @@
           "middleware/**",
           "scripts/**",
           "config/**",
-          "*.js",
           "*.mjs",
-          ".env",
+          "*.json",
           "!**/.wwebjs_cache/**",
-          "!uploads/**"
+          "!uploads/**",
+          "!**/session/**"
         ]
       },
       "electron/**",
@@ -160,13 +160,13 @@
       "!**/tests/**",
       "!**/example/**",
       "!**/examples/**",
-      "!**/tests/**",
       "!**/.git/**",
       "!**/.vscode/**",
       "!**/screenshots/**"
     ],
     "extraResources": [
-      { "from": "backend/uploads", "to": "backend/uploads", "filter": ["!**/*"] }
+      { "from": "backend/uploads", "to": "backend/uploads", "filter": ["!**/*"] },
+      { "from": "backend/database_config.json", "to": "backend/database_config.json" }
     ],
     "win": {
       "target": "nsis",
