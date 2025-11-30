@@ -130,14 +130,15 @@ async function createWindow() {
   });
 
   win = new BrowserWindow({
-    width: 1280,
-    height: 800,
-    webPreferences: {
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: true,
-      backgroundThrottling: false,
-      preload: path.join(__dirname, 'preload.cjs'),
+  width: 1280,
+  height: 800,
+  webPreferences: {
+    contextIsolation: true,
+    nodeIntegration: false,
+    sandbox: false, 
+    backgroundThrottling: false,
+    partition: 'persist:main', 
+    preload: path.join(__dirname, 'preload.cjs'),
     },
   });
 
