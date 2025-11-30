@@ -1,4 +1,4 @@
-import defaultPool, { getLocalPool, renderPool } from '../db.js';
+import defaultPool, { getLocalPool, hostPool } from '../db.js';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -7,7 +7,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 function getDb() {
-  return getLocalPool() || renderPool || defaultPool;
+  return getLocalPool() || hostPool || defaultPool;
 }
 
 function ensureDateDaysAgo(days) {
@@ -211,15 +211,9 @@ export const cleanupOldContactsAndGroups = async () => {
     const days = parseInt(process.env.DATA_RETENTION_DAYS_CONTACTS || process.env.DATA_RETENTION_DAYS || '30', 10);
     const cutoff = ensureDateDaysAgo(isNaN(days) ? 30 : days);
 
-    // Delete inactive contacts older than cutoff (by updated_at)
-    const delContacts = await db.query(
-      `DELETE FROM contacts
-       WHERE (is_active = FALSE OR is_active IS NULL)
-       AND updated_at < $1
-       RETURNING id`,
-      [cutoff]
-    );
-    const contactsDeleted = delContacts.rowCount || 0;
+    // Delete old contacts (by updated_at) - skip this for now as contacts are always needed
+    // Contacts don't have is_active column, so we skip this cleanup
+    const contactsDeleted = 0;
 
     // Delete empty contact groups with no contacts and older than cutoff
     const delGroups = await db.query(

@@ -1,13 +1,22 @@
-import defaultPool, { rebuildPool, isLocalPoolConnected, getLocalPool, renderPool } from "../src/db.js";
+import defaultPool, { rebuildPool, isLocalPoolConnected, getLocalPool, hostPool } from "../src/db.js";
 import { databaseConfig } from "../src/databaseConfig.js";
 import fs from 'fs';
 import path from 'path';
-import pkg from 'pg';
-const { Pool } = pkg;
+import { createRequire } from 'module';
+
+const require = createRequire(import.meta.url);
+const { Pool } = require('pg');
 
 export const getSettings = async (req, res) => {
   try {
-    const pool = getLocalPool() || renderPool || defaultPool;
+    // Prefer local DB when configured, otherwise fall back to host DB
+    const pool = getLocalPool() || hostPool || defaultPool;
+
+    if (!pool) {
+      console.warn('Get settings: no active database pool. Returning defaults.');
+      return res.json({ whatsapp_number: '', profile_name: '', email: '', app_icon: '' });
+    }
+
     const keys = ['whatsapp_number', 'profile_name', 'email', 'app_icon'];
     let result;
     try {
@@ -46,7 +55,11 @@ export const getSettings = async (req, res) => {
 
 export const updateSettings = async (req, res) => {
   try {
-    const pool = getLocalPool() || renderPool || defaultPool;
+    const pool = getLocalPool() || hostPool || defaultPool;
+    if (!pool) {
+      return res.status(500).json({ success: false, message: 'No database connection available to update settings' });
+    }
+
     const userId = req.user.id;
     const { whatsapp_number, profile_name, email } = req.body;
 

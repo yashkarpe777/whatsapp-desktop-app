@@ -1,5 +1,5 @@
 import express from "express";
-import { getWhatsAppStatus, logoutWhatsApp, initWhatsApp } from "../src/services/whatsappservice.js";
+import { getWhatsAppStatus, logoutWhatsApp, disconnectWhatsApp, initWhatsApp, recoverSession, validateSession } from "../src/services/whatsappservice.js";
 import fs from 'fs';
 import path from 'path';
 
@@ -92,11 +92,35 @@ router.post("/logout", async (req, res) => {
 // Alias to match frontend expectation
 router.post("/disconnect", async (req, res) => {
   try {
-    await logoutWhatsApp();
-    res.json({ success: true, message: "WhatsApp disconnected" });
+    const result = await disconnectWhatsApp();
+    res.json({ success: true, message: result.message, session: result.session });
   } catch (error) {
     console.error("Error disconnecting WhatsApp:", error);
     res.status(500).json({ error: "Failed to disconnect WhatsApp" });
+  }
+});
+
+// Session recovery endpoint
+router.post("/recover", async (req, res) => {
+  try {
+    const result = await recoverSession();
+    res.json(result);
+  } catch (error) {
+    console.error("Error recovering WhatsApp session:", error);
+    res.status(500).json({ success: false, error: "Failed to recover WhatsApp session" });
+  }
+});
+
+// Session validation endpoint
+router.get("/validate", async (req, res) => {
+  try {
+    const path = require('path').resolve;
+    const sessionPath = process.env.WHATSAPP_DATA_PATH || path.join(process.cwd(), '.wwebjs_auth');
+    const validation = await validateSession(sessionPath);
+    res.json(validation);
+  } catch (error) {
+    console.error("Error validating WhatsApp session:", error);
+    res.status(500).json({ valid: false, reason: error.message });
   }
 });
 

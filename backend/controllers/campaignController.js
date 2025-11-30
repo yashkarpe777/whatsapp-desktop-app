@@ -1,6 +1,6 @@
 import { hotPool } from '../src/db.js';
-import { sendCampaign, getWhatsAppStatus, initWhatsApp } from '../src/services/whatsappservice.js';
-import { authorizeCoinsRemote, refundCoinsRemote, getBalanceRemote } from '../src/services/remoteCoins.js';
+import { sendCampaign, getWhatsAppStatus, initWhatsApp, logoutWhatsApp, pauseCampaignService, resumeCampaignService, stopCampaignService } from '../src/services/whatsappservice.js';
+import { reserveCampaignCoins, syncCampaignCoinSpend } from '../src/services/coinService.js';
 
 const pool = hotPool;
 
@@ -24,7 +24,6 @@ export const createCampaign = async (req, res) => {
       return res.status(400).json({ success: false, message: "Title and message are required" });
     }
 
-    // Validate message delay (1-60 seconds, default 2)
     let delay = parseInt(message_delay_seconds) || 2;
     if (delay < 1) delay = 1;
     if (delay > 60) delay = 60;
@@ -42,11 +41,12 @@ export const createCampaign = async (req, res) => {
     // Auto-create pending logs if group_id provided
     if (contact_group_id) {
       const logResult = await pool.query(
-        `INSERT INTO campaign_logs (campaign_id, contact_id, status)
-         SELECT $1, c.id, 'pending' FROM contacts c WHERE c.group_id = $2 AND c.user_id = $3`,
-        [result.rows[0].id, contact_group_id, userId]
+        `INSERT INTO campaign_logs (campaign_id, contact_id, phone, message, media_url, status)
+         SELECT $1, c.id, c.phone, $2, $3, 'pending' FROM contacts c WHERE c.group_id = $4 AND c.user_id = $5
+         ON CONFLICT (campaign_id, contact_id) DO NOTHING`,
+        [result.rows[0].id, message, mediaUrl, contact_group_id, userId]
       );
-      console.log(`Created ${logResult.rowCount} pending logs for campaign`);
+      console.log(`✅ Created ${logResult.rowCount} pending logs for campaign (duplicates skipped)`);
     }
 
     res.json({ success: true, campaign: result.rows[0] });
@@ -107,47 +107,16 @@ export const startCampaign = async (req, res) => {
     console.log(`📊 Contact count: ${contactCount}`);
 
     const authHeader = req.headers['authorization'] || '';
-    let partialCampaignWarning = null;
 
     try {
-      let coinsToAuthorize = contactCount;
-      let availableCoins = 0;
-
-      try {
-        const bal = await getBalanceRemote(authHeader);
-        availableCoins = parseInt(bal?.coins ?? 0);
-        console.log(`💰 Available coins: ${availableCoins}`);
-
-        if (availableCoins === 0) {
-          console.log('❌ No coins available');
-          return res.status(400).json({ success: false, message: `No coins available. Please add coins to start campaign.` });
-        }
-
-        if (availableCoins < contactCount) {
-          coinsToAuthorize = availableCoins;
-          console.warn(`⚠️ Partial campaign: authorizing ${coinsToAuthorize} coins for ${contactCount} contacts`);
-        }
-      } catch (e) {
-        console.error('❌ Coin balance check failed:', e);
-      }
-
-      console.log(`🔐 Authorizing ${coinsToAuthorize} coins`);
-      await authorizeCoinsRemote(coinsToAuthorize, authHeader, req.user || {});
-      console.log('✅ Coins authorized');
-
-      partialCampaignWarning = coinsToAuthorize < contactCount ? {
-        isPartial: true,
-        authorizedContacts: coinsToAuthorize,
-        totalContacts: contactCount,
-        message: `⚠️ Insufficient coins: Campaign will send to ${coinsToAuthorize} contacts. Remaining ${contactCount - coinsToAuthorize} contacts will be skipped.`
-      } : null;
-
-      if (partialCampaignWarning) {
-        console.warn(partialCampaignWarning.message);
-      }
+      await reserveCampaignCoins(userId, id, contactCount);
+      await pool.query(
+        'UPDATE campaigns SET coins_spent = $1 WHERE id = $2',
+        [contactCount, id]
+      );
     } catch (e) {
-      console.error('❌ Coin authorization failed:', e);
-      return res.status(400).json({ success: false, message: e?.message || 'Coin authorization failed' });
+      console.error('❌ Coin reservation failed:', e);
+      return res.status(400).json({ success: false, message: e?.message || 'Unable to reserve coins' });
     }
 
     // Update campaign status to running
@@ -169,9 +138,10 @@ export const startCampaign = async (req, res) => {
       if (logCount === 0) {
         console.log('📝 Creating new campaign logs');
         const logResult = await pool.query(
-          `INSERT INTO campaign_logs (campaign_id, contact_id, status)
-           SELECT $1, c.id, 'pending' FROM contacts c WHERE c.group_id = $2 AND c.user_id = $3 AND c.phone IS NOT NULL`,
-          [id, campaign.contact_group_id, userId]
+          `INSERT INTO campaign_logs (campaign_id, contact_id, phone, message, media_url, status)
+           SELECT $1, c.id, c.phone, $2, $3, 'pending' FROM contacts c WHERE c.group_id = $4 AND c.user_id = $5 AND c.phone IS NOT NULL
+           ON CONFLICT (campaign_id, contact_id) DO NOTHING`,
+          [id, campaign.message, campaign.media_url, campaign.contact_group_id, userId]
         );
         console.log(`✅ Created ${logResult.rowCount} pending logs for campaign ${id}`);
       } else {
@@ -180,6 +150,8 @@ export const startCampaign = async (req, res) => {
     }
 
     console.log('🚀 Starting sendCampaign background process');
+    
+    // Start campaign in background
     sendCampaign(id, authHeader).catch(async (error) => {
       console.error("Campaign send error:", error);
       await pool.query(
@@ -190,23 +162,19 @@ export const startCampaign = async (req, res) => {
         "UPDATE campaign_logs SET status = 'failed', error_message = $2 WHERE campaign_id = $1 AND status = 'pending'",
         [id, error.message]
       );
+      try {
+        await syncCampaignCoinSpend(id);
+      } catch (coinErr) {
+        console.warn('⚠️ Coin reconciliation failed after campaign error:', coinErr.message);
+      }
     });
 
-    // Return response with partial campaign warning if applicable
-    const response = {
-      success: true,
-      campaign: result.rows[0],
-      message: partialCampaignWarning
-        ? partialCampaignWarning.message
-        : "Campaign started successfully. Check logs for progress."
-    };
-
-    if (partialCampaignWarning) {
-      response.warning = partialCampaignWarning;
-    }
-
+    // Send response immediately, don't wait for campaign to finish
     console.log('✅ Campaign started successfully, sending response');
-    res.json(response);
+    res.json({
+      success: true,
+      message: "Campaign started successfully"
+    });
   } catch (error) {
     console.error("❌ Start campaign error:", error);
     res.status(500).json({ success: false, message: error?.message || "Failed to start campaign" });
@@ -542,13 +510,14 @@ export const rerunCampaign = async (req, res) => {
     // Clone campaign with overrides if provided
     const cloneRes = await pool.query(
       `INSERT INTO campaigns (user_id, title, message, media_url, contact_group_id, status, created_at)
-       VALUES ($1, COALESCE($2, $4), COALESCE($3, $5), COALESCE($4, $6), $7, 'pending', CURRENT_TIMESTAMP)
+       VALUES ($1, COALESCE($2, $5), COALESCE($3, $6), COALESCE($4, $7), $8, 'pending', CURRENT_TIMESTAMP)
        RETURNING *`,
       [
         src.user_id,
         title || null,
         message || null,
         mediaFile || null,
+        src.title,
         src.message,
         src.media_url,
         src.contact_group_id
@@ -581,33 +550,45 @@ export const rerunCampaign = async (req, res) => {
       return res.status(400).json({ success: false, message: 'No valid numbers to run. Please fix contacts (+91XXXXXXXXXX or 10 digits).' });
     }
 
-    // Online coins authorization (Render)
+    let coinsAuthorized = 0;
+    const authHeader = req.headers['authorization'] || '';
     try {
-      const authHeader = req.headers['authorization'] || '';
-      await authorizeCoinsRemote(contactCount, authHeader);
+      const reservation = await reserveCampaignCoins(userId, newCampaign.id, contactCount);
+      coinsAuthorized = reservation.reserved;
     } catch (e) {
-      return res.status(400).json({ success: false, message: e?.message || 'Coin authorization failed' });
+      return res.status(400).json({ success: false, message: e?.message || 'Coin reservation failed' });
     }
 
     // Create logs, deduct coins, and start
     await pool.query('BEGIN');
     try {
-      for (const cid of contactIds) {
-        await pool.query('INSERT INTO campaign_logs (campaign_id, contact_id, status) VALUES ($1,$2,$3)', [newCampaign.id, cid, 'pending']);
-      }
-      // Coins managed online; no local deduction
-      await pool.query('UPDATE campaigns SET status=\'running\', started_at=CURRENT_TIMESTAMP WHERE id=$1', [newCampaign.id]);
+      // Batch insert for better performance
+      await pool.query(
+        `INSERT INTO campaign_logs (campaign_id, contact_id, phone, message, media_url, status)
+         SELECT $1, id, phone, $2, $3, 'pending' FROM contacts WHERE id = ANY($4)
+         ON CONFLICT (campaign_id, contact_id) DO NOTHING`,
+        [newCampaign.id, newCampaign.message, newCampaign.media_url, contactIds]
+      );
+      await pool.query(
+        "UPDATE campaigns SET status='running', started_at=CURRENT_TIMESTAMP, coins_spent=$2 WHERE id=$1",
+        [newCampaign.id, coinsAuthorized]
+      );
       await pool.query('COMMIT');
     } catch (e) {
       await pool.query('ROLLBACK');
       throw e;
     }
 
-    const authHeader = req.headers['authorization'] || '';
     sendCampaign(newCampaign.id, authHeader).catch(async (error) => {
       console.error('Campaign rerun error:', error);
+
       await pool.query('UPDATE campaigns SET status=\'failed\', error_message=$1, completed_at=CURRENT_TIMESTAMP WHERE id=$2', [error.message, newCampaign.id]);
       await pool.query('UPDATE campaign_logs SET status=\'failed\', error_message=$2 WHERE campaign_id=$1 AND status=\'pending\'', [newCampaign.id, error.message]);
+      try {
+        await syncCampaignCoinSpend(newCampaign.id);
+      } catch (coinErr) {
+        console.warn('⚠️ Coin reconciliation failed after rerun error:', coinErr.message);
+      }
     });
 
     res.json({ success: true, message: 'Campaign rerun started', campaign: newCampaign });
@@ -653,21 +634,26 @@ export const retryFailed = async (req, res) => {
       return res.status(400).json({ success: false, message: 'No failed contacts to retry.' });
     }
 
-    // Online coins authorization (Render)
+    const authHeader = req.headers['authorization'] || '';
+    let retryCoinsAuthorized = 0;
     try {
-      const authHeader = req.headers['authorization'] || '';
-      await authorizeCoinsRemote(retryCount, authHeader, req.user || {});
+      const reservation = await reserveCampaignCoins(userId, newCampaign.id, retryCount);
+      retryCoinsAuthorized = reservation.reserved;
     } catch (e) {
-      return res.status(400).json({ success: false, message: e?.message || 'Coin authorization failed' });
+      return res.status(400).json({ success: false, message: e?.message || 'Coin reservation failed' });
     }
 
     // Create pending logs for retry contacts
     await pool.query('BEGIN');
     try {
-      for (const row of failedContacts.rows) {
-        await pool.query('INSERT INTO campaign_logs (campaign_id, contact_id, status) VALUES ($1, $2, $3)', [newCampaign.id, row.contact_id, 'pending']);
-      }
-      // Coins managed online; no local deduction
+      // Batch insert for better performance
+      const failedIds = failedContacts.rows.map(r => r.contact_id);
+      await pool.query(
+        `INSERT INTO campaign_logs (campaign_id, contact_id, phone, message, media_url, status)
+         SELECT $1, id, phone, $2, $3, 'pending' FROM contacts WHERE id = ANY($4)
+         ON CONFLICT (campaign_id, contact_id) DO NOTHING`,
+        [newCampaign.id, newCampaign.message, newCampaign.media_url, failedIds]
+      );
       await pool.query('COMMIT');
     } catch (e) {
       await pool.query('ROLLBACK');
@@ -675,12 +661,19 @@ export const retryFailed = async (req, res) => {
     }
 
     // Start the new campaign
-    await pool.query("UPDATE campaigns SET status='running', started_at=CURRENT_TIMESTAMP WHERE id=$1", [newCampaign.id]);
-    const authHeader = req.headers['authorization'] || '';
+    await pool.query(
+      "UPDATE campaigns SET status='running', started_at=CURRENT_TIMESTAMP, coins_spent=$2 WHERE id=$1",
+      [newCampaign.id, retryCoinsAuthorized]
+    );
     sendCampaign(newCampaign.id, authHeader).catch(async (error) => {
       console.error('Retry-failed send error:', error);
       await pool.query("UPDATE campaigns SET status='failed', error_message=$1, completed_at=CURRENT_TIMESTAMP WHERE id=$2", [error.message, newCampaign.id]);
       await pool.query("UPDATE campaign_logs SET status='failed', error_message=$2 WHERE campaign_id=$1 AND status='pending'", [newCampaign.id, error.message]);
+      try {
+        await syncCampaignCoinSpend(newCampaign.id);
+      } catch (coinErr) {
+        console.warn('⚠️ Coin reconciliation failed after retry error:', coinErr.message);
+      }
     });
 
     res.json({ success: true, message: 'Retry of failed contacts started', campaign: newCampaign });
@@ -695,16 +688,43 @@ export const pauseCampaign = async (req, res) => {
     const { id } = req.params;
     const userId = await resolveLocalUserId(req);
 
-    const result = await pool.query(
-      "UPDATE campaigns SET status = 'paused' WHERE id = $1 AND user_id = $2 RETURNING *",
+    // Verify ownership
+    const campaignCheck = await pool.query(
+      "SELECT * FROM campaigns WHERE id = $1 AND user_id = $2",
       [id, userId]
     );
 
-    if (result.rowCount === 0) {
+    if (campaignCheck.rowCount === 0) {
       return res.status(404).json({ success: false, message: "Campaign not found or unauthorized" });
     }
 
-    res.json({ success: true, campaign: result.rows[0], message: "Campaign paused successfully" });
+    const campaign = campaignCheck.rows[0];
+
+    // Use queue-based pause system
+    const result = await pauseCampaignService(id);
+
+    let refundNote = '';
+    try {
+      const ledger = await syncCampaignCoinSpend(id);
+      if (ledger?.refunded) {
+        refundNote = ` Refunded ${ledger.refunded} unused coins.`;
+      }
+    } catch (ledgerErr) {
+      console.warn('⚠️ Coin reconciliation failed during pause:', ledgerErr.message);
+    }
+
+    // Get updated campaign data
+    const updatedCampaign = await pool.query(
+      "SELECT * FROM campaigns WHERE id = $1",
+      [id]
+    );
+
+    console.log(`✅ Campaign ${id} paused successfully`);
+    res.json({
+      success: true,
+      campaign: updatedCampaign.rows[0],
+      message: `Campaign paused successfully.${refundNote}`
+    });
   } catch (error) {
     console.error("Pause campaign error:", error);
     res.status(500).json({ success: false, message: error?.message || "Failed to pause campaign" });
@@ -729,21 +749,34 @@ export const resumeCampaign = async (req, res) => {
       return res.status(400).json({ success: false, message: "Campaign is not paused" });
     }
 
-    const result = await pool.query(
-      "UPDATE campaigns SET status = 'running' WHERE id = $1 AND user_id = $2 RETURNING *",
-      [id, userId]
-    );
+    // Ensure WhatsApp is ready
+    const status = getWhatsAppStatus();
+    if (!status.ready) {
+      return res.status(400).json({
+        success: false,
+        needsLogin: true,
+        qr: status.qr || null,
+        message: "Please scan QR code to connect WhatsApp before resuming campaign"
+      });
+    }
 
     const authHeader = req.headers['authorization'] || '';
-    sendCampaign(id, authHeader).catch(async (error) => {
-      console.error("Campaign resume error:", error);
-      await pool.query(
-        "UPDATE campaigns SET status = 'failed', error_message = $1 WHERE id = $2",
-        [error.message, id]
-      );
-    });
 
-    res.json({ success: true, campaign: result.rows[0], message: "Campaign resumed successfully" });
+    // Use queue-based resume system
+    const result = await resumeCampaignService(id, authHeader);
+
+    // Get updated campaign data
+    const updatedCampaign = await pool.query(
+      "SELECT * FROM campaigns WHERE id = $1",
+      [id]
+    );
+
+    console.log(`✅ Campaign ${id} resumed successfully`);
+    res.json({
+      success: true,
+      campaign: updatedCampaign.rows[0],
+      message: "Campaign resumed successfully. Messages will continue from where they stopped."
+    });
   } catch (error) {
     console.error("Resume campaign error:", error);
     res.status(500).json({ success: false, message: error?.message || "Failed to resume campaign" });

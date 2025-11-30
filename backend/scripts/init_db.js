@@ -35,12 +35,30 @@ async function main() {
   if (url) {
     pool = new Pool({ connectionString: url, ssl: useSsl, ...commonPool });
   } else {
+    const resolvedHost = process.env.PGHOST || process.env.DB_HOST;
+    const resolvedPort = Number(process.env.PGPORT || process.env.DB_PORT || 5432);
+    const resolvedUser = process.env.PGUSER || process.env.DB_USER;
+    const resolvedPassword = process.env.PGPASSWORD || process.env.DB_PASSWORD;
+    const resolvedDatabase = process.env.PGDATABASE || process.env.DB_NAME;
+
+    const missing = [];
+    if (!resolvedHost) missing.push('host');
+    if (!resolvedUser) missing.push('user');
+    if (!resolvedPassword) missing.push('password');
+    if (!resolvedDatabase) missing.push('database');
+
+    if (missing.length > 0) {
+      console.error('❌ Missing database configuration values:', missing.join(', '));
+      console.error('   Provide them via environment variables or DATABASE_URL.');
+      process.exit(1);
+    }
+
     pool = new Pool({
-      host: process.env.PGHOST || process.env.DB_HOST || 'localhost',
-      port: Number(process.env.PGPORT || process.env.DB_PORT || 5432),
-      user: process.env.PGUSER || process.env.DB_USER || 'postgres',
-      password: process.env.PGPASSWORD || process.env.DB_PASSWORD || 'postgres',
-      database: process.env.PGDATABASE || process.env.DB_NAME || 'whatsapp_blast',
+      host: resolvedHost,
+      port: resolvedPort,
+      user: resolvedUser,
+      password: resolvedPassword,
+      database: resolvedDatabase,
       ssl: useSsl,
       ...commonPool,
     });

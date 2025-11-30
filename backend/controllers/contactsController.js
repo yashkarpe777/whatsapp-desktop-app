@@ -84,7 +84,8 @@ export const uploadContacts = async (req, res) => {
         const name = row.name || '';
 
         const normalized = normalizeIndianForStorage(phone);
-        if (!normalized || !/^\+\d{12}$/.test(normalized)) { // +91 + 10 digits
+        // Accept 10-15 digits after + (supports various country codes)
+        if (!normalized || !/^\+\d{10,15}$/.test(normalized)) {
           invalidRows++;
           continue;
         }

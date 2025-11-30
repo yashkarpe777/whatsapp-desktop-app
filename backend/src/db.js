@@ -1,9 +1,12 @@
 import dotenv from "dotenv";
-import pkg from "pg";
 import path from "path";
 import { fileURLToPath } from "url";
+import { createRequire } from "module";
 import fs from "fs";
 import { databaseConfig } from "./databaseConfig.js";
+
+const require = createRequire(import.meta.url);
+const pkg = require("pg");
 
 try {
   const __filename = fileURLToPath(import.meta.url);
@@ -13,45 +16,60 @@ try {
   dotenv.config({ override: true });
 }
 
+const serviceMode = String(process.env.SERVICE_MODE || "").toLowerCase();
+const disableLocalDbFlag = String(
+  process.env.DISABLE_LOCAL_DB ?? process.env.DISABLED_LOCAL_DB ?? ""
+).toLowerCase();
+const disableLocalDb = disableLocalDbFlag === "true" || serviceMode === "coins-only";
+const enableHostDbFlag = String(process.env.ENABLE_HOST_DB || "").toLowerCase();
+const hostDbEnabled = enableHostDbFlag === "true";
+
+if (serviceMode === "coins-only" && disableLocalDbFlag !== "true") {
+  console.log("⏭️  Service mode 'coins-only' detected – skipping local database initialization");
+}
+
 const { Pool } = pkg;
 
-function buildRenderPool() {
-  const useSsl = process.env.DB_SSL === "true" ? { rejectUnauthorized: false } : false;
-  const urlRaw = process.env.DATABASE_URL || "";
-  const commonPool = {
+function buildHostPool() {
+  if (!hostDbEnabled) {
+    console.log("⏭️ Host database usage disabled (ENABLE_HOST_DB != true)");
+    return null;
+  }
+  const useSsl = process.env.DB_SSL === "true";
+  const connectionString = process.env.DATABASE_URL;
+
+  if (!connectionString) {
+    console.warn("⚠️ No DATABASE_URL for host pool");
+    return null;
+  }
+
+  console.log('🔄 Building host pool with URL:', connectionString.replace(/\/\/[^:]+:[^@]+@/, '//***:***@'));
+
+  const config = {
+    connectionString,
+    ssl: useSsl ? { rejectUnauthorized: false } : false,
     keepAlive: true,
     max: Number(process.env.PGPOOL_MAX || 10),
     idleTimeoutMillis: Number(process.env.PG_IDLE_TIMEOUT_MS || 30000),
-    connectionTimeoutMillis: Number(process.env.PG_CONN_TIMEOUT_MS || 5000), // Shorter timeout for faster fallback
+    connectionTimeoutMillis: Number(process.env.PG_CONN_TIMEOUT_MS || 5000),
   };
 
-  if (urlRaw) {
-    console.log('🔄 Building Render pool with URL:', urlRaw.replace(/\/\/[^:]+:[^@]+@/, '//***:***@'));
-    try {
-      const normalized = urlRaw.replace(/^postgres(ql)?:\/\//, 'postgres://');
-      const u = new URL(normalized);
-      const cfg = {
-        host: u.hostname,
-        port: Number(u.port || 5432),
-        user: decodeURIComponent(u.username || ''),
-        password: String(decodeURIComponent(u.password || '')),
-        database: decodeURIComponent(u.pathname.replace(/^\//, '')),
-        ssl: useSsl,
-        ...commonPool,
-      };
-      console.log('✅ Render pool config:', { host: cfg.host, port: cfg.port, user: cfg.user, database: cfg.database, ssl: !!cfg.ssl });
-      return new Pool(cfg);
-    } catch (e) {
-      console.error('✗ Failed to parse RENDER DATABASE_URL:', e?.message || e);
-      console.log('🔄 Falling back to connection string format...');
-      return new Pool({ connectionString: urlRaw, ssl: useSsl, ...commonPool });
-    }
-  }
-  console.warn('⚠️ No DATABASE_URL for Render pool');
-  return null;
+  console.log('✅ Host pool config:', {
+    ssl: config.ssl,
+    keepAlive: config.keepAlive,
+    max: config.max,
+    idleTimeoutMillis: config.idleTimeoutMillis,
+    connectionTimeoutMillis: config.connectionTimeoutMillis
+  });
+
+  return new Pool(config);
 }
 
 function buildLocalPool() {
+  if (disableLocalDb) {
+    console.log("🔒 Local database usage disabled by DISABLE_LOCAL_DB flag");
+    return null;
+  }
   const useSsl = process.env.LOCAL_DB_SSL === "true" ? { rejectUnauthorized: false } : false;
   delete process.env.PGHOST;
   delete process.env.PGPORT;
@@ -116,15 +134,15 @@ function buildLocalPool() {
     try {
       const safe = { ...cfg, password: cfg.password ? `len:${String(cfg.password).length}` : undefined, ssl: !!cfg.ssl };
       console.log('Local DB config ->', safe);
-    } catch {}
+    } catch { }
   }
   return new Pool(cfg);
 }
 
-let renderPool = buildRenderPool();
+let hostPool = buildHostPool();
 let localPool = buildLocalPool();
 export function getActivePool() {
-  return getLocalPool() || renderPool || null;
+  return getLocalPool() || hostPool || null;
 }
 export const hotPool = {
   async query(...args) {
@@ -134,6 +152,10 @@ export const hotPool = {
   }
 };
 export const rebuildPool = async () => {
+  if (disableLocalDb) {
+    console.warn("⚠️  Attempted to rebuild local DB pool while DISABLE_LOCAL_DB is true");
+    throw new Error("Local database is disabled");
+  }
   console.log('🔄 Rebuilding local database connection...');
   if (localPool) {
     try {
@@ -141,10 +163,10 @@ export const rebuildPool = async () => {
       console.log('✅ Closed existing local pool');
     } catch (error) {
       console.warn('⚠️ Error closing existing pool:', error.message);
-     }
+    }
   }
   localPool = buildLocalPool();
-  
+
   if (!localPool) {
     console.error('❌ Failed to build local pool - no configuration found');
     throw new Error('No local database configuration found');
@@ -164,7 +186,7 @@ export const isLocalPoolConnected = async () => {
   if (!localPool) {
     return false;
   }
-  
+
   try {
     await localPool.query('SELECT 1');
     return true;
@@ -173,7 +195,7 @@ export const isLocalPoolConnected = async () => {
     return false;
   }
 };
-async function ensureRenderSchema(poolInstance) {
+async function ensureHostSchema(poolInstance) {
   const ddl = [
     `CREATE TABLE IF NOT EXISTS users (
       id SERIAL PRIMARY KEY,
@@ -204,7 +226,18 @@ async function ensureRenderSchema(poolInstance) {
       otp VARCHAR(10) NOT NULL,
       expires_at TIMESTAMP NOT NULL,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )`
+    )`,
+    `CREATE TABLE IF NOT EXISTS whatsapp_sessions (
+      id SERIAL PRIMARY KEY,
+      session_id VARCHAR(100) UNIQUE NOT NULL,
+      phone_number VARCHAR(20),
+      push_name VARCHAR(255),
+      is_active BOOLEAN DEFAULT TRUE,
+      last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_whatsapp_sessions_session_id ON whatsapp_sessions(session_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_whatsapp_sessions_active ON whatsapp_sessions(is_active)`
   ];
 
   const client = await poolInstance.connect();
@@ -279,17 +312,27 @@ async function ensureLocalSchema(poolInstance) {
     `ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS coins_spent INTEGER DEFAULT 0`,
     `ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS started_at TIMESTAMP`,
     `ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS completed_at TIMESTAMP`,
+    `ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS whatsapp_session_id VARCHAR(255)`,
     `CREATE TABLE IF NOT EXISTS campaign_logs (
       id SERIAL PRIMARY KEY,
       campaign_id INTEGER REFERENCES campaigns(id) ON DELETE CASCADE,
       contact_id INTEGER REFERENCES contacts(id) ON DELETE CASCADE,
+      phone VARCHAR(20) NOT NULL DEFAULT '',
+      message TEXT,
+      media_url VARCHAR(500),
       status VARCHAR(20) DEFAULT 'pending',
       error_message TEXT,
       sent_at TIMESTAMP,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )`,
+    `ALTER TABLE campaign_logs ADD COLUMN IF NOT EXISTS phone VARCHAR(20) DEFAULT ''`,
+    `ALTER TABLE campaign_logs ADD COLUMN IF NOT EXISTS message TEXT`,
+    `ALTER TABLE campaign_logs ADD COLUMN IF NOT EXISTS media_url VARCHAR(500)`,
+    `ALTER TABLE campaign_logs ADD COLUMN IF NOT EXISTS error_message TEXT`,
+    `ALTER TABLE campaign_logs ADD COLUMN IF NOT EXISTS sent_at TIMESTAMP`,
     `CREATE INDEX IF NOT EXISTS idx_campaign_logs_campaign_id ON campaign_logs(campaign_id)`,
     `CREATE INDEX IF NOT EXISTS idx_campaign_logs_status ON campaign_logs(status)`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_campaign_logs_unique ON campaign_logs(campaign_id, contact_id)`,
     `CREATE TABLE IF NOT EXISTS settings (
       id SERIAL PRIMARY KEY,
       key VARCHAR(100) UNIQUE NOT NULL,
@@ -309,6 +352,25 @@ async function ensureLocalSchema(poolInstance) {
     )`,
     `CREATE INDEX IF NOT EXISTS idx_uploads_user_id ON uploads(user_id)`,
     `CREATE UNIQUE INDEX IF NOT EXISTS idx_uploads_stored_filename ON uploads(stored_filename)`,
+    `CREATE TABLE IF NOT EXISTS campaign_state (
+      id SERIAL PRIMARY KEY,
+      campaign_id INTEGER UNIQUE NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
+      state JSONB NOT NULL,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_campaign_state_campaign_id ON campaign_state(campaign_id)`,
+    `CREATE TABLE IF NOT EXISTS whatsapp_sessions (
+      id SERIAL PRIMARY KEY,
+      session_id VARCHAR(100) UNIQUE NOT NULL,
+      phone_number VARCHAR(20),
+      push_name VARCHAR(255),
+      is_active BOOLEAN DEFAULT TRUE,
+      last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_whatsapp_sessions_session_id ON whatsapp_sessions(session_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_whatsapp_sessions_active ON whatsapp_sessions(is_active)`,
     `CREATE TABLE IF NOT EXISTS cleanup_logs (
       id SERIAL PRIMARY KEY,
       operation VARCHAR(50) NOT NULL,
@@ -328,22 +390,22 @@ async function ensureLocalSchema(poolInstance) {
     client.release();
   }
 }
-async function initializeRenderDatabase(poolInstance) {
+async function initializeHostDatabase(poolInstance) {
   if (!poolInstance) return true;
   try {
     await poolInstance.query('SELECT NOW()');
-    console.log('✅ Render database connected successfully');
-    await ensureRenderSchema(poolInstance);
-    console.log('🗃️  Render database schema ensured');
+    console.log('✅ Host database connected successfully');
+    await ensureHostSchema(poolInstance);
+    console.log('🗃️  Host database schema ensured');
     return true;
   } catch (error) {
-    console.error('❌ Render database connection/schema failed:', error.message);
+    console.error('❌ Host database connection/schema failed:', error.message);
     return false;
   }
 }
 async function removeForeignKeyConstraints(poolInstance) {
   if (!poolInstance) return;
-  
+
   const constraints = [
     { table: 'contact_groups', constraint: 'contact_groups_user_id_fkey' },
     { table: 'contacts', constraint: 'contacts_user_id_fkey' },
@@ -351,7 +413,7 @@ async function removeForeignKeyConstraints(poolInstance) {
     { table: 'uploads', constraint: 'uploads_user_id_fkey' },
     { table: 'settings', constraint: 'settings_updated_by_fkey' }
   ];
-  
+
   const client = await poolInstance.connect();
   try {
     for (const { table, constraint } of constraints) {
@@ -442,12 +504,12 @@ async function initializeLocalDatabase(poolInstance) {
   }
 }
 
-if (renderPool) {
-  renderPool.on("connect", () => {
-    console.log('🔗 Render database connection established');
+if (hostPool) {
+  hostPool.on("connect", () => {
+    console.log('🔗 Host database connection established');
   });
-  renderPool.on("error", (err) => {
-    console.error('❌ Render database pool error:', err.message);
+  hostPool.on("error", (err) => {
+    console.error('❌ Host database pool error:', err.message);
   });
 }
 
@@ -461,35 +523,39 @@ if (localPool) {
 }
 
 // Initialize on startup
-initializeRenderDatabase(renderPool).catch(() => {
-  console.warn('⚠️  Render database initialization failed - will retry when accessed');
+initializeHostDatabase(hostPool).catch(() => {
+  console.warn('⚠️  Host database initialization failed - will retry when accessed');
 });
 
 // Initialize local database with retry mechanism
-const initializeLocalWithRetry = async (retries = 3) => {
-  for (let i = 0; i < retries; i++) {
-    try {
-      await initializeLocalDatabase(localPool);
-      console.log('✅ Local database initialized successfully');
-      return true;
-    } catch (error) {
-      console.warn(`⚠️  Local database initialization attempt ${i + 1} failed:`, error.message);
-      if (i === retries - 1) {
-        console.error('❌ All local database initialization attempts failed');
-        return false;
+if (!disableLocalDb) {
+  const initializeLocalWithRetry = async (retries = 3) => {
+    for (let i = 0; i < retries; i++) {
+      try {
+        await initializeLocalDatabase(localPool);
+        console.log('✅ Local database initialized successfully');
+        return true;
+      } catch (error) {
+        console.warn(`⚠️  Local database initialization attempt ${i + 1} failed:`, error.message);
+        if (i === retries - 1) {
+          console.error('❌ All local database initialization attempts failed');
+          return false;
+        }
+        // Wait before retry
+        await new Promise(resolve => setTimeout(resolve, 2000));
       }
-      // Wait before retry
-      await new Promise(resolve => setTimeout(resolve, 2000));
     }
-  }
-  return false;
-};
+    return false;
+  };
 
-initializeLocalWithRetry();
+  initializeLocalWithRetry();
+} else {
+  console.log('⏭️  Skipping local database initialization (disabled)');
+}
 
 export const testConnection = async () => {
   try {
-    if (renderPool) await renderPool.query('SELECT NOW()');
+    if (hostPool) await hostPool.query('SELECT NOW()');
     if (localPool) await localPool.query('SELECT NOW()');
     console.log('✅ Database connections successful');
   } catch (err) {
@@ -498,5 +564,10 @@ export const testConnection = async () => {
   }
 };
 
-export { renderPool, localPool };
-export default renderPool;
+export const isLocalDbDisabled = () => disableLocalDb;
+
+// Backward compatibility alias (older imports expect rebuildLocalPool)
+export const rebuildLocalPool = rebuildPool;
+
+export { hostPool, localPool };
+export default hostPool;

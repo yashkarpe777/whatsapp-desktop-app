@@ -1,9 +1,15 @@
 import express from "express";
 import jwt from "jsonwebtoken";
-import nodemailer from "nodemailer";
-import { getLocalPool, renderPool, hotPool } from "../src/db.js";
+import { getLocalPool, hostPool, hotPool } from "../src/db.js";
 import { authenticateToken } from "../middleware/authMiddleware.js";
 import bcrypt from "bcryptjs";
+
+let nodemailer = null;
+try {
+  nodemailer = (await import("nodemailer")).default;
+} catch (err) {
+  console.warn('⚠️ nodemailer not available - OTP emails disabled');
+}
 
 const router = express.Router();
 
@@ -27,13 +33,12 @@ const AUTH_DB = (process.env.AUTH_DB || 'auto').toLowerCase();
 async function queryWithFallback(sql, params) {
   const errors = [];
   
-  // Explicit selection if provided
   if (AUTH_DB === 'render') {
-    if (!renderPool) throw new Error('Render DB not configured');
+    if (!hostPool) throw new Error('Host DB not configured');
     try {
-      return await renderPool.query(sql, params);
+      return await hostPool.query(sql, params);
     } catch (e) {
-      console.error('✗ Render DB query failed (explicit mode):', e?.message);
+      console.error('✗ Host DB query failed (explicit mode):', e?.message);
       throw e;
     }
   }
@@ -47,7 +52,6 @@ async function queryWithFallback(sql, params) {
         throw e;
       }
     }
-    // last resort
     try {
       return await hotPool.query(sql, params);
     } catch (e) {
@@ -56,19 +60,19 @@ async function queryWithFallback(sql, params) {
     }
   }
 
-  // Auto mode: try Render first if present, then Local, then hot
-  if (renderPool) {
+
+  if (hostPool) {
     try {
-      console.log('🔄 Trying Render DB for auth query...');
-      return await renderPool.query(sql, params);
+      console.log('🔄 Trying host DB for auth query...');
+      return await hostPool.query(sql, params);
     } catch (e) {
-      console.warn('⚠️ Render DB failed, trying fallback:', e?.message);
-      errors.push(`Render: ${e?.message}`);
+      console.warn('⚠️ Host DB failed, trying fallback:', e?.message);
+      errors.push(`Host: ${e?.message}`);
       if (!isTransientDbError(e)) {
-        console.error('✗ Render DB hard failure, not retrying:', e?.message);
-        throw e; // hard failure: propagate
+        console.error('✗ Host DB hard failure, not retrying:', e?.message);
+        throw e; 
       }
-      // transient: fall through to local
+
     }
   }
   
@@ -100,12 +104,13 @@ async function queryWithFallback(sql, params) {
 
 const pool = { query: queryWithFallback };
 
-// Nodemailer setup using env-driven SMTP and fallback to SMTPS:465 if 587 times out
+
 const SMTP_HOST = process.env.SMTP_HOST || 'smtp.gmail.com';
 const SMTP_PORT = Number(process.env.SMTP_PORT || '587');
 const SMTP_SECURE = String(process.env.SMTP_SECURE || 'false') === 'true';
 
 function buildTransporter(host = SMTP_HOST, port = SMTP_PORT, secure = SMTP_SECURE) {
+  if (!nodemailer) throw new Error('nodemailer not available');
   const commonTimeout = {
     connectionTimeout: Number(process.env.SMTP_CONN_TIMEOUT || 15000),
     greetingTimeout: Number(process.env.SMTP_GREET_TIMEOUT || 15000),
@@ -127,8 +132,6 @@ function buildTransporter(host = SMTP_HOST, port = SMTP_PORT, secure = SMTP_SECU
     ...commonTimeout,
   });
 }
-
-// --- Provider chain email sender ---
 function getSmtpConfig(profile) {
   const p = String(profile || 'SMTP1').toUpperCase();
   const host = process.env[`${p}_HOST`] || process.env.SMTP_HOST || 'smtp.gmail.com';
@@ -140,6 +143,7 @@ function getSmtpConfig(profile) {
 }
 
 function buildTransporterFromConfig(cfg) {
+  if (!nodemailer) throw new Error('nodemailer not available');
   const commonTimeout = {
     connectionTimeout: Number(process.env.SMTP_CONN_TIMEOUT || 15000),
     greetingTimeout: Number(process.env.SMTP_GREET_TIMEOUT || 15000),
@@ -215,11 +219,10 @@ async function sendOtpEmail(toEmail, otp) {
     .map(s => s.trim().toLowerCase())
     .filter(Boolean);
 
-  // Force SMTP-only behavior if RESEND_API_KEY is not configured
   if (!process.env.RESEND_API_KEY) {
     providers = providers.filter(p => p !== 'resend');
   }
-  // Safety: ensure at least one SMTP profile is attempted
+
   if (providers.length === 0) providers = ['smtp1'];
 
   const subject = 'Your OTP Code';
@@ -271,8 +274,7 @@ router.post("/login-password", async (req, res) => {
 
     const token = jwt.sign(
       { id: user.id, email: user.email, role: user.role },
-      process.env.JWT_SECRET,
-      { expiresIn: process.env.JWT_EXPIRES_IN || "7d" }
+      process.env.JWT_SECRET
     );
 
     res.json({
@@ -429,8 +431,7 @@ router.post('/verify-otp', async (req, res) => {
 
     const token = jwt.sign(
       { id: user.id, email: user.email, role: user.role },
-      process.env.JWT_SECRET,
-      { expiresIn: process.env.JWT_EXPIRES_IN || "7d" }
+      process.env.JWT_SECRET
     );
 
     res.json({

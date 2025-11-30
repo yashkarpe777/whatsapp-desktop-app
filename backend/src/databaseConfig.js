@@ -15,6 +15,7 @@ function getConfigDir() {
   try { fs.mkdirSync(fallback, { recursive: true }); } catch {}
   return fallback;
 }
+
 class DatabaseConfig {
   constructor() {
     const baseDir = getConfigDir();
@@ -26,11 +27,28 @@ class DatabaseConfig {
     try {
       if (fs.existsSync(this.configPath)) {
         const data = fs.readFileSync(this.configPath, 'utf8');
-        return JSON.parse(data);
+        const config = JSON.parse(data);
+        if (config && config.password !== undefined && config.password !== null) {
+          config.password = String(config.password);
+        }
+        return config;
       }
     } catch (error) {
       console.warn('Failed to load database config:', error.message);
     }
+
+    // Fallback to env variables
+    if (process.env.LOCAL_DB_HOST && process.env.LOCAL_DB_USER && process.env.LOCAL_DB_NAME) {
+      return {
+        host: process.env.LOCAL_DB_HOST,
+        port: Number(process.env.LOCAL_DB_PORT || 5432),
+        user: process.env.LOCAL_DB_USER,
+        password: process.env.LOCAL_DB_PASSWORD,
+        database: process.env.LOCAL_DB_NAME,
+        ssl: process.env.LOCAL_DB_SSL === 'true'
+      };
+    }
+
     return null;
   }
 
@@ -38,10 +56,7 @@ class DatabaseConfig {
     try {
       const dir = path.dirname(this.configPath);
       try { fs.mkdirSync(dir, { recursive: true }); } catch {}
-      const configData = {
-        ...config,
-        updatedAt: new Date().toISOString()
-      };
+      const configData = { ...config, password: config.password ? String(config.password) : '', updatedAt: new Date().toISOString() };
       fs.writeFileSync(this.configPath, JSON.stringify(configData, null, 2), 'utf8');
       this.config = configData;
       console.log('✅ Database configuration saved successfully');
@@ -53,18 +68,26 @@ class DatabaseConfig {
   }
 
   getConfig() {
+    if (this.config && this.config.host && this.config.user && this.config.database) {
+      return this.config;
+    }
+
+    const refreshed = this.loadConfig();
+    if (refreshed) {
+      this.config = refreshed;
+    }
+
     return this.config;
   }
 
   hasConfig() {
-    return this.config && this.config.host && this.config.user && this.config.database;
+    const cfg = this.getConfig();
+    return !!(cfg && cfg.host && cfg.user && cfg.database);
   }
 
   clearConfig() {
     try {
-      if (fs.existsSync(this.configPath)) {
-        fs.unlinkSync(this.configPath);
-      }
+      if (fs.existsSync(this.configPath)) fs.unlinkSync(this.configPath);
       this.config = null;
       console.log('✅ Database configuration cleared');
       return true;
@@ -76,6 +99,3 @@ class DatabaseConfig {
 }
 
 export const databaseConfig = new DatabaseConfig();
-
-
-

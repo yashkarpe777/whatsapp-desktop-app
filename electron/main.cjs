@@ -1,7 +1,7 @@
 // Electron main process (CommonJS) that starts the local backend and opens the UI
 // Secure defaults: sandboxed renderer, contextIsolation on, nodeIntegration off
 
-const { app, BrowserWindow, dialog, shell, ipcMain } = require('electron');
+const { app, BrowserWindow, dialog, shell, ipcMain, Tray, nativeImage } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { fork } = require('child_process');
@@ -10,6 +10,7 @@ const crypto = require('crypto');
 
 let win = null;
 let backend = null;
+let isQuitting = false;
 let log = (msg) => {};
 let logFile = null;
 const PORT = process.env.PORT || '3000';
@@ -80,12 +81,32 @@ function startBackend() {
     }
   }
 
+const sessionDir = path.join(userData, 'whatsapp-bulk-sender', 'session');
+  try { 
+    fs.mkdirSync(sessionDir, { recursive: true, mode: 0o755 }); 
+    console.log('✅ WhatsApp session directory created:', sessionDir);
+    
+    // Test write permissions
+    const testFile = path.join(sessionDir, '.permission_test');
+    fs.writeFileSync(testFile, 'test');
+    fs.unlinkSync(testFile);
+    console.log('✅ Session directory permissions verified');
+  } catch (err) {
+    console.error('❌ Failed to create or access session directory:', err?.message || err);
+    console.error('❌ Session path:', sessionDir);
+    console.error('❌ User data path:', userData);
+  }
+  
+  // Set stable session path for WhatsApp
+  process.env.WHATSAPP_DATA_PATH = sessionDir;
+  console.log('📁 WhatsApp session path set to:', sessionDir);
+
   const env = {
     ...process.env,
     PORT: String(PORT),
     SERVICE_MODE: 'all',
     HEADLESS: 'false',
-    WHATSAPP_DATA_PATH: path.join(userData, 'wwebjs_auth'),
+    WHATSAPP_DATA_PATH: sessionDir,
     UPLOADS_DIR: path.join(userData, 'uploads'),
     CONFIG_DIR: configDir,
     JWT_SECRET: jwtSecret,
@@ -93,19 +114,17 @@ function startBackend() {
     CHROME_BIN: process.env.CHROME_BIN || 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
     PUPPETEER_SKIP_DOWNLOAD: 'true',
     PUPPETEER_EXECUTABLE_PATH: process.env.CHROME_BIN || 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-    // Online coins/auth base (Render)
-    ADMIN_API_BASE_URL: process.env.ADMIN_API_BASE_URL || 'https://bulk-whatsapp-sender-desktopapp.onrender.com',
-    // Render Postgres settings: ensure packaged app has a working external DB for auth/users/coins
-    DATABASE_URL: process.env.DATABASE_URL || process.env.RENDER_DATABASE_URL || 'postgresql://whatsapp_db_czfd_user:kjL9PHyN2UpgSj70MfBDztsdhPnuxy8y@dpg-d3gfdc95pdvs73ef6umg-a.singapore-postgres.render.com/whatsapp_db_czfd',
-    DB_SSL: process.env.DB_SSL || 'true',
+    ADMIN_API_BASE_URL: process.env.ADMIN_API_BASE_URL || 'http://127.0.0.1:3000',
+    DATABASE_URL: process.env.DATABASE_URL || 'postgresql://app_user:strongpassword@localhost:5432/whatsapp_blast',
+    DB_SSL: process.env.DB_SSL || 'false',
+    ELECTRON_DEV: 'false', // Explicitly set to false in production
+    NODE_ENV: 'production', // Explicitly set to production
+    WHATSAPP_CLIENT_ID: 'whatsapp-blast-prod', // Fixed client ID for session persistence
   };
 
   log(`Starting backend: ${serverEntry}`);
   log(`Env PORT=${env.PORT} SERVICE_MODE=${env.SERVICE_MODE}`);
-  try {
-    const hasRender = !!env.DATABASE_URL;
-    log(`Render DB configured: ${hasRender ? 'yes' : 'no'}`);
-  } catch {}
+  try { const hasRender = !!env.DATABASE_URL; log(`Render DB configured: ${hasRender ? 'yes' : 'no'}`); } catch {}
 
   const child = fork(serverEntry, [], { env, stdio: 'pipe', silent: true });
   child.stdout && child.stdout.on('data', (d) => { const t = d.toString(); log(t.trim()); });
@@ -131,20 +150,32 @@ async function createWindow() {
   win = new BrowserWindow({
     width: 1280,
     height: 800,
+    icon: path.join(__dirname, 'assets', 'icon.ico'),
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      backgroundThrottling: false,
       preload: path.join(__dirname, 'preload.cjs'),
     },
   });
+
+  const iconPath = path.join(__dirname, 'assets', 'icon.ico');
+  const image = nativeImage.createFromPath(iconPath);
+  if (!image.isEmpty()) {
+    tray = new Tray(image);
+    tray.setToolTip('WhatsApp Blast');
+    tray.on('click', () => {
+      if (win) {
+        win.isVisible() ? win.hide() : win.show();
+      }
+    });
+  }
 
   try {
     if (isDev()) {
       await win.loadURL('http://127.0.0.1:8080');
     } else {
-      // In production, files are inside resources/app.asar; __dirname points
-      // to resources/app.asar/electron, so ../dist/index.html resolves correctly.
       const indexPath = path.join(__dirname, '..', 'dist', 'index.html');
       await win.loadFile(indexPath);
     }
@@ -152,6 +183,14 @@ async function createWindow() {
     dialog.showErrorBox('Startup error', String(err?.message || err));
     app.quit();
   }
+
+  win.on('close', (event) => {
+    if (!isQuitting) {
+      event.preventDefault();
+      win.hide();
+      return;
+    }
+  });
 
   win.on('closed', () => {
     win = null;
@@ -161,6 +200,7 @@ async function createWindow() {
 app.on('second-instance', () => {
   if (win) {
     if (win.isMinimized()) win.restore();
+    if (!win.isVisible()) win.show();
     win.focus();
   }
 });
@@ -202,6 +242,12 @@ ipcMain.handle('backend:restart', async () => {
 
 app.whenReady().then(createWindow);
 
+app.on('before-quit', () => {
+  isQuitting = true;
+});
+
 app.on('window-all-closed', () => {
-  app.quit();
+  if (isQuitting) {
+    app.quit();
+  }
 });

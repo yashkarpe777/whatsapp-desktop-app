@@ -1,8 +1,10 @@
-const jwt = require('jsonwebtoken');
-const { pool } = require('../config/database');
+import jwt from 'jsonwebtoken';
+import { hostPool, hotPool } from '../src/db.js';
+
+const pool = hostPool || hotPool;
 
 // Verify JWT token
-const verifyToken = async (req, res, next) => {
+export const verifyToken = async (req, res, next) => {
   try {
     const token = req.header('Authorization')?.replace('Bearer ', '');
     
@@ -18,7 +20,7 @@ const verifyToken = async (req, res, next) => {
     // Get user from database
     const userQuery = await pool.query(
       'SELECT id, username, email, role, coins, is_active FROM users WHERE id = $1',
-      [decoded.userId]
+      [decoded.userId || decoded.id]
     );
 
     if (userQuery.rows.length === 0) {
@@ -49,7 +51,7 @@ const verifyToken = async (req, res, next) => {
 };
 
 // Check if user is admin
-const requireAdmin = (req, res, next) => {
+export const requireAdmin = (req, res, next) => {
   if (req.user.role !== 'admin') {
     return res.status(403).json({ 
       success: false, 
@@ -60,7 +62,7 @@ const requireAdmin = (req, res, next) => {
 };
 
 // Check if user has sufficient coins
-const checkCoins = (requiredCoins) => {
+export const checkCoins = (requiredCoins) => {
   return (req, res, next) => {
     if (req.user.coins < requiredCoins) {
       return res.status(400).json({ 
@@ -70,10 +72,4 @@ const checkCoins = (requiredCoins) => {
     }
     next();
   };
-};
-
-module.exports = {
-  verifyToken,
-  requireAdmin,
-  checkCoins
 };

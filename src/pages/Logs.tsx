@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useToast } from "@/hooks/use-toast";
-import { Search, RefreshCw, FileText, CheckCircle, XCircle, Clock } from "lucide-react";
+import { Search, RefreshCw, FileText, CheckCircle, XCircle, Clock, AlertCircle } from "lucide-react";
 import { apiService, type Campaign, API_BASE_URL } from "@/services/api";
 
 interface Log {
@@ -23,6 +23,7 @@ interface Log {
 export default function Logs() {
   const [logs, setLogs] = useState<Log[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [currentPage, setCurrentPage] = useState(1);
@@ -55,6 +56,7 @@ export default function Logs() {
   const loadLogs = async () => {
     try {
       setLoading(true);
+      setError(null);
       let response: any;
       if (selectedCampaignId === 'all') {
         response = await apiService.getAllLogs(currentPage, logsPerPage);
@@ -70,6 +72,7 @@ export default function Logs() {
         description: "Failed to load logs",
         variant: "destructive",
       });
+      setError("Unable to load logs right now. Please check your connection and try again.");
     } finally {
       setLoading(false);
     }
@@ -116,6 +119,15 @@ export default function Logs() {
 
   return (
     <div className="space-y-6">
+      {error && logs.length > 0 && (
+        <div className="flex items-center gap-3 rounded-md border border-destructive/50 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+          <AlertCircle className="w-4 h-4" />
+          <span>{error}</span>
+          <Button size="sm" variant="outline" onClick={loadLogs} className="ml-auto">
+            Retry
+          </Button>
+        </div>
+      )}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-3xl font-bold">Campaign Logs</h1>
@@ -226,10 +238,17 @@ export default function Logs() {
           </div>
 
           {/* Logs Table */}
-          {loading ? (
+          {loading && logs.length === 0 ? (
             <div className="text-center py-8">
               <RefreshCw className="w-8 h-8 animate-spin mx-auto mb-4 text-muted-foreground" />
               <p className="text-muted-foreground">Loading logs...</p>
+            </div>
+          ) : !loading && error && logs.length === 0 ? (
+            <div className="text-center py-12">
+              <AlertCircle className="w-12 h-12 text-destructive mx-auto mb-4" />
+              <h3 className="text-xl font-semibold mb-2">Failed to load logs</h3>
+              <p className="text-muted-foreground mb-4">{error}</p>
+              <Button onClick={loadLogs}>Retry</Button>
             </div>
           ) : filteredLogs.length > 0 ? (
             <>

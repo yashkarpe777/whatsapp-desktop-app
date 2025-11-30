@@ -12,7 +12,7 @@ import settingsRoutes from "./routes/settingsRoutes";
 dotenv.config();
 const app = express();
 
-// CORS configuration for desktop app
+
 app.use(cors({
   origin: true, 
   credentials: true,
@@ -35,6 +35,6 @@ app.use("/api/whatsapp", whatsappRoutes);
 app.use("/api/settings", settingsRoutes);
 
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => {
+app.listen(PORT, "0.0.0.0", () => {
   console.log(`Server running on port ${PORT}`);
 });

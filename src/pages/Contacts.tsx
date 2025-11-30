@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -25,6 +25,7 @@ import * as XLSX from 'xlsx';
 export default function Contacts() {
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
   const [currentPage, setCurrentPage] = useState(1);
   const [totalContacts, setTotalContacts] = useState(0);
@@ -40,6 +41,7 @@ export default function Contacts() {
   const [uploadedFilesList, setUploadedFilesList] = useState<any[]>([]);
   const [groups, setGroups] = useState<{ id: number; name: string; contact_count: number }[]>([]);
   const [showFileManagement, setShowFileManagement] = useState(false);
+  const retryTimeoutRef = useRef<number | null>(null);
   const { toast } = useToast();
 
   const contactsPerPage = 50;
@@ -48,6 +50,11 @@ export default function Contacts() {
     loadContacts();
     loadUploadedFiles();
     loadGroups();
+
+    return () => {
+      clearRetryTimeout();
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentPage]);
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
@@ -222,7 +229,17 @@ export default function Contacts() {
     URL.revokeObjectURL(url);
   };
 
+  const clearRetryTimeout = () => {
+    if (retryTimeoutRef.current) {
+      clearTimeout(retryTimeoutRef.current);
+      retryTimeoutRef.current = null;
+    }
+  };
+
   const loadContacts = async () => {
+    clearRetryTimeout();
+    setError(null);
+    setLoading(true);
     try {
       const data = await apiService.getContacts(currentPage, contactsPerPage);
       setContacts(data.contacts);
@@ -234,6 +251,10 @@ export default function Contacts() {
         description: "Failed to load contacts",
         variant: "destructive",
       });
+      setError("Failed to load contacts. Please check your connection and try again.");
+      retryTimeoutRef.current = window.setTimeout(() => {
+        loadContacts();
+      }, 5000);
     } finally {
       setLoading(false);
     }
@@ -337,7 +358,7 @@ export default function Contacts() {
 
   const totalPages = Math.ceil(totalContacts / contactsPerPage);
 
-  if (loading) {
+  if (loading && contacts.length === 0) {
     return (
       <div className="flex items-center justify-center min-h-screen">
         <div className="w-8 h-8 border-4 border-primary border-t-transparent rounded-full animate-spin"></div>
@@ -345,8 +366,38 @@ export default function Contacts() {
     );
   }
 
+  if (!loading && error && contacts.length === 0) {
+    return (
+      <div className="flex items-center justify-center min-h-screen">
+        <Card className="w-[320px] text-center">
+          <CardHeader>
+            <CardTitle className="flex flex-col items-center gap-2">
+              <AlertCircle className="w-6 h-6 text-destructive" />
+              Unable to load contacts
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <p className="text-sm text-muted-foreground">{error}</p>
+            <Button onClick={loadContacts} className="w-full">
+              Retry
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
   return (
     <div className="p-6 space-y-6">
+      {error && contacts.length > 0 && (
+        <div className="flex items-center gap-3 rounded-md border border-destructive/50 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+          <AlertCircle className="w-4 h-4" />
+          <span>{error}</span>
+          <Button size="sm" variant="outline" onClick={loadContacts} className="ml-auto">
+            Retry
+          </Button>
+        </div>
+      )}
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>

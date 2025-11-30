@@ -16,8 +16,9 @@ import settingsRoutes from '../routes/settingsRoutes.js';
 import coinsRoutes from '../routes/coinsRoutes.js';
 
 // Resume engine
-import pool, { renderPool, localPool, rebuildPool, isLocalPoolConnected, getLocalPool } from './db.js';
-import { sendCampaign } from './services/whatsappservice.js';
+import pool, { hostPool, localPool, rebuildPool, isLocalPoolConnected, getLocalPool } from './db.js';
+import { sendCampaign, initWhatsApp } from './services/whatsappservice.js';
+import { recoverCampaigns, cleanupQueue } from './services/campaignQueue.js';
 import { runCleanup } from './services/cleanupService.js';
 
 // Resolve __dirname for ESM
@@ -43,8 +44,9 @@ app.use(express.urlencoded({ extended: true }));
 
 
 const SERVICE_MODE = process.env.SERVICE_MODE || 'all';
+const isCoinsOnly = SERVICE_MODE === 'coins-only';
 
-if (SERVICE_MODE !== 'coins-only') {
+if (!isCoinsOnly) {
   // Serve static files for media when running full service
   const uploadsDir = process.env.UPLOADS_DIR || path.join(process.cwd(), 'uploads');
   app.use('/uploads', express.static(uploadsDir));
@@ -73,19 +75,19 @@ app.get('/health', async (req, res) => {
       message: 'Server is running',
       service_mode: SERVICE_MODE,
       databases: {
-        render: false,
+        host: false,
         local: false
       },
       errors: []
     };
 
-    // Check Render database
-    if (renderPool) {
+    // Check Host database
+    if (hostPool) {
       try {
-        await renderPool.query('SELECT 1');
-        health.databases.render = true;
+        await hostPool.query('SELECT 1');
+        health.databases.host = true;
       } catch (error) {
-        health.errors.push(`Render DB: ${error.message}`);
+        health.errors.push(`Host DB: ${error.message}`);
       }
     }
 
@@ -107,7 +109,7 @@ app.get('/health', async (req, res) => {
 
     // Determine overall status
     if (SERVICE_MODE === 'coins-only') {
-      health.status = health.databases.render ? 'ok' : 'degraded';
+      health.status = health.databases.host ? 'ok' : 'degraded';
     } else {
       health.status = health.databases.local ? 'ok' : 'degraded';
     }
@@ -120,7 +122,7 @@ app.get('/health', async (req, res) => {
       message: 'Health check failed',
       service_mode: SERVICE_MODE,
       databases: {
-        render: false,
+        host: false,
         local: false
       },
       errors: [error.message]
@@ -162,16 +164,30 @@ app.listen(PORT, () => {
   console.log(`🧩 Service mode: ${svc}`);
   console.log(`🗄️  DB host: ${dbHost}`);
   console.log(`✉️  Email configured: ${emailSet}`);
-  if (svc !== 'coins-only') {
+  if (!isCoinsOnly) {
     const uploadsDir = process.env.UPLOADS_DIR || path.join(process.cwd(), 'uploads');
     console.log(`📁 Static files served from: ${uploadsDir}`);
   }
 
-  // Kick the resume engine shortly after startup
-  setTimeout(resumeInProgressCampaigns, 3000);
+  if (isCoinsOnly) {
+    console.log('⏭️  Coins-only mode active – skipping campaign recovery and cleanup schedulers');
+  } else {
+    // Campaign recovery: resume any running campaigns after restart
+    setTimeout(async () => {
+      console.log('🔄 Starting campaign recovery...');
+      try {
+        await recoverCampaigns();
+      } catch (error) {
+        console.error('❌ Campaign recovery failed:', error.message);
+      }
+    }, 5000);
 
-  // Run cleanup on startup and then daily
-  setTimeout(runCleanup, 5000);
+    // Run cleanup on startup and then daily
+    setTimeout(runCleanup, 10000);
+
+    // Clean up queue periodically
+    setInterval(cleanupQueue, 24 * 60 * 60 * 1000); // Daily
+  }
 });
 
 // Lightweight crash-resume engine using Postgres advisory locks
@@ -191,42 +207,28 @@ async function tryWithPgLock(campaignId, fn) {
 }
 
 async function resumeInProgressCampaigns() {
+  // This is now handled by the queue system's recoverCampaigns()
+  // Keeping this function for backward compatibility
   try {
-    const res = await pool.query(`
-      SELECT id
-      FROM campaigns
-      WHERE status = 'running'
-        AND EXISTS (SELECT 1 FROM campaign_logs cl WHERE cl.campaign_id = campaigns.id AND cl.status = 'pending')
-      ORDER BY id ASC
-      LIMIT 10
-    `);
-    for (const row of res.rows) {
-      const id = row.id;
-      if (inflight.has(id)) continue;
-      inflight.add(id);
-      try {
-        await tryWithPgLock(id, async () => {
-          // Resume campaigns don't have auth header, will skip coin checks
-          await sendCampaign(id, '').catch(() => {});
-        });
-      } finally {
-        inflight.delete(id);
-      }
-    }
+    await recoverCampaigns();
   } catch (e) {
-    // swallow errors; will try again on next tick
+    console.warn('⚠️ Campaign recovery sweep failed:', e.message);
   }
 }
 
-// Periodic resume sweep
-setInterval(resumeInProgressCampaigns, 60 * 1000);
+if (!isCoinsOnly) {
+  // Periodic resume sweep (as backup to queue system)
+  setInterval(resumeInProgressCampaigns, 5 * 60 * 1000); // Every 5 minutes
 
-// Daily cleanup at 2 AM
-setInterval(() => {
-  const now = new Date();
-  if (now.getHours() === 2 && now.getMinutes() === 0) {
-    runCleanup().catch(console.error);
-  }
-}, 60 * 1000); // Check every minute
+  // Daily cleanup at 2 AM
+  setInterval(() => {
+    const now = new Date();
+    if (now.getHours() === 2 && now.getMinutes() === 0) {
+      runCleanup().catch(console.error);
+    }
+  }, 60 * 1000);
+} else {
+  console.log('⏭️  Skipping background schedulers in coins-only mode');
+}
 
 export default app;

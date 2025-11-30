@@ -1,5 +1,5 @@
 import { hotPool } from "../src/db.js";
-import { getBalanceRemote } from "../src/services/remoteCoins.js";
+import { getUserCoins } from "../src/services/coinService.js";
 
 const pool = hotPool;
 
@@ -76,26 +76,7 @@ export const getDashboardStats = async (req, res) => {
       "SELECT COUNT(*) FROM campaigns WHERE status = 'completed' AND user_id = $1", [userId]
     );
 
-    // Coins: prefer remote admin balance; fallback to local users.coins
-    let remainingCoins = 0;
-    try {
-      const authHeader = req.headers['authorization'] || '';
-      if (authHeader) {
-        const remote = await getBalanceRemote(authHeader);
-        // expect { success, coins }
-        remainingCoins = parseInt(remote?.coins ?? 0);
-      }
-    } catch (_) {
-      // ignore; fallback to local
-    }
-    if (!remainingCoins) {
-      try {
-        const userCoinsRes = await pool.query(
-          "SELECT coins FROM users WHERE id = $1", [userId]
-        );
-        remainingCoins = parseInt(userCoinsRes.rows[0]?.coins || 0);
-      } catch {}
-    }
+    const remainingCoins = await getUserCoins(userId);
 
     const stoppedCampaignsRes = await pool.query(
       "SELECT COUNT(*) FROM campaigns WHERE status = 'failed' AND user_id = $1", [userId]

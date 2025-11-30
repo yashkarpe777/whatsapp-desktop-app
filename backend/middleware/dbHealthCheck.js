@@ -1,7 +1,15 @@
-import { getLocalPool } from '../src/db.js';
+import { getLocalPool, isLocalDbDisabled } from '../src/db.js';
 
 // Middleware to check if local database is available
 export const requireLocalDB = (req, res, next) => {
+  if (isLocalDbDisabled()) {
+    return res.status(503).json({
+      success: false,
+      error: 'LOCAL_DB_DISABLED',
+      message: 'Local database is disabled in this build. Please connect to the hosted API.',
+      action: 'use_remote_api'
+    });
+  }
   const localPool = getLocalPool();
   if (!localPool) {
     return res.status(503).json({
@@ -31,6 +39,10 @@ export const requireLocalDB = (req, res, next) => {
 
 // Middleware to check if local database is available (non-blocking)
 export const checkLocalDB = (req, res, next) => {
+  if (isLocalDbDisabled()) {
+    req.localDbAvailable = false;
+    return next();
+  }
   const localPool = getLocalPool();
   if (!localPool) {
     req.localDbAvailable = false;
