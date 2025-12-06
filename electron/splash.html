@@ -1,0 +1,95 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        .splash-container {
+            text-align: center;
+            color: white;
+            padding: 40px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 20px;
+            backdrop-filter: blur(10px);
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+        }
+        .logo {
+            font-size: 48px;
+            margin-bottom: 20px;
+        }
+        .title {
+            font-size: 28px;
+            margin-bottom: 10px;
+            font-weight: bold;
+        }
+        .subtitle {
+            font-size: 16px;
+            margin-bottom: 30px;
+            opacity: 0.9;
+        }
+        .loader {
+            width: 200px;
+            height: 4px;
+            background: rgba(255, 255, 255, 0.2);
+            border-radius: 2px;
+            margin: 0 auto;
+            overflow: hidden;
+        }
+        .loader-bar {
+            height: 100%;
+            background: white;
+            width: 0%;
+            border-radius: 2px;
+            animation: loading 3s ease-in-out infinite;
+        }
+        @keyframes loading {
+            0% { width: 0%; }
+            50% { width: 100%; }
+            100% { width: 0%; }
+        }
+        .message {
+            margin-top: 20px;
+            font-size: 14px;
+            opacity: 0.8;
+        }
+    </style>
+</head>
+<body>
+    <div class="splash-container">
+        <div class="logo">📱</div>
+        <div class="title">WhatsApp Blast</div>
+        <div class="subtitle">Portable Desktop Application</div>
+        <div class="loader">
+            <div class="loader-bar"></div>
+        </div>
+        <div class="message" id="status">Starting application...</div>
+    </div>
+    <script>
+        const messages = [
+            "Starting WhatsApp services...",
+            "Initializing database...",
+            "Loading campaign manager...",
+            "Preparing Chrome browser...",
+            "Almost ready..."
+        ];
+        let index = 0;
+        
+        function updateMessage() {
+            document.getElementById('status').textContent = messages[index];
+            index = (index + 1) % messages.length;
+        }
+        
+        updateMessage();
+        setInterval(updateMessage, 3000);
+    </script>
+</body>
+</html>

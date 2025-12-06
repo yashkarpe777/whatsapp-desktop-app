@@ -118,12 +118,17 @@
     "appId": "com.brightcrest.whatsappblast",
     "productName": "WhatsApp Blast",
     "asar": true,
-    "asarUnpack": [
-      "node_modules/puppeteer-core/**",
-      "node_modules/ffmpeg-static/**",
-      "node_modules/whatsapp-web.js/**",
-      "node_modules/**/build/**"
-    ],
+   "asarUnpack": [
+  "node_modules/puppeteer-core/**",
+  "node_modules/ffmpeg-static/**",
+  "node_modules/**/{*.node,*.dll}",
+  "node_modules/multer/**",
+  ".wwebjs_auth/**",
+  ".wwebjs_cache/**",
+  "whatsapp-sessions/**",
+  "**/.wwebjs_auth/**",
+  "**/.wwebjs_cache/**"
+],
     "directories": {
       "output": "release",
       "buildResources": "build"
@@ -142,10 +147,10 @@
           "scripts/**",
           "config/**",
           "*.mjs",
-          "*.json",
+          ".env*",
           "!**/.wwebjs_cache/**",
           "!uploads/**",
-          "!**/session/**"
+          "!**/.wwebjs_auth/**"
         ]
       },
       "electron/**",

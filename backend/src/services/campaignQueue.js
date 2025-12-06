@@ -4,11 +4,13 @@ import { hotPool } from '../db.js';
 import { syncCampaignCoinSpend } from './coinService.js';
 import path from 'path';
 import fs from 'fs';
-
-let MessageMedia = null;
+import pkg from 'whatsapp-web.js';
+const { MessageMedia } = pkg;
+// let MessageMedia = null;
 
 export function registerWhatsAppDependencies(deps = {}) {
-  MessageMedia = deps.MessageMedia || null;
+  // MessageMedia = deps.MessageMedia || null;
+   console.log('✅ WhatsApp dependencies registered');
 }
 
 const MIN_DELAY_MS = Number(process.env.WHATSAPP_MIN_DELAY_MS || 2000);
@@ -302,7 +304,7 @@ export function initializeCampaignQueue(whatsappClient) {
       let mediaFullPath = null;
       if (mediaPath) {
         try {
-          ensureMessageHelpers();
+          // ensureMessageHelpers();
           const uploadsDir = process.env.UPLOADS_DIR || path.join(process.cwd(), 'uploads');
           mediaFullPath = path.join(uploadsDir, mediaPath);
           

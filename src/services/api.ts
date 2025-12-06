@@ -113,19 +113,18 @@ class ApiService {
           }
         } catch {}
 
-        // Handle authentication errors specifically
-        if (response.status === 401 || errorCode === 'TOKEN_EXPIRED' || errorCode === 'INVALID_TOKEN') {
-          console.warn('Authentication failed - clearing token and redirecting to login');
-          localStorage.removeItem('token');
-          localStorage.removeItem('loginTime');
-          localStorage.removeItem('tokenExpiresAt');
-          
-          // Trigger a page reload to redirect to login
-          if (typeof window !== 'undefined') {
-            window.location.href = '/';
+        // Silent refresh-and-retry on auth errors
+        if (response.status === 401 || /invalid|expired|jwt/i.test(detail)) {
+          const newTok = await this.refreshToken();
+          if (newTok) {
+            const retryCfg: RequestInit = {
+              ...config,
+              headers: { ...(config.headers as any), 'Authorization': `Bearer ${newTok}` },
+            };
+            const retryResp = await fetch(url, retryCfg);
+            if (retryResp.ok) return retryResp.json();
           }
         }
-
         throw new Error(detail);
       }
 
@@ -548,6 +547,33 @@ class ApiService {
     return this.request('/settings/db/status', {
       method: 'GET',
     });
+  }
+
+  private async refreshToken(): Promise<string | null> {
+    try {
+      const token = localStorage.getItem('token');
+      if (!token) return null;
+
+      const response = await fetch(`${API_BASE_URL_ADMIN}/auth/refresh`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`,
+        },
+      });
+
+      if (!response.ok) return null;
+
+      const data = await response.json();
+      if (data.token) {
+        localStorage.setItem('token', data.token);
+        return data.token;
+      }
+      return null;
+    } catch (error) {
+      console.error('Token refresh failed:', error);
+      return null;
+    }
   }
 }
 

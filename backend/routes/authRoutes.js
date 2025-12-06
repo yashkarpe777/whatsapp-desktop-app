@@ -296,6 +296,96 @@ router.post("/login-password", async (req, res) => {
   }
 });
 
+
+
+// Refresh access token without disturbing client work
+// Accepts an expired token but with a valid signature (primary or secondary)
+
+
+// // Temporary bypass for testing
+// router.post("/login-password", async (req, res) => {
+//   try {
+//     const { username, password } = req.body || {};
+    
+//     if (!username || !password) {
+//       return res.status(400).json({ error: "username and password are required" });
+//     }
+
+
+
+    
+//     // HARDCODED TEST CREDENTIALS (Temporary)
+//     if (username === 'admin123' && password === 'admin123') {
+//       const token = jwt.sign(
+//         { id: 1, email: 'admin@example.com', role: 'admin' },
+//         process.env.JWT_SECRET
+//       );
+
+//       return res.json({
+//         message: "Login successful (test mode)",
+//         token,
+//         user: { 
+//           id: 1, 
+//           email: 'admin@example.com', 
+//           username: 'admin123', 
+//           role: 'admin', 
+//           coins: 1000 
+//         }
+//       });
+//     }
+
+//     // Rest of your original code...
+//     const userRes = await pool.query(
+//       "SELECT id, email, username, role, coins, password_hash FROM users WHERE (username=$1 OR email=$1) AND role IN ('user','admin')",
+//       [username]
+//     );
+    
+//     // ... rest of code
+//   } catch (err) {
+//     console.error("✗ Password Login Error:", err.message);
+//     res.status(500).json({ 
+//       error: "Login failed",
+//       details: "Database connection issue"
+//     });
+//   }
+// });
+router.post('/refresh', async (req, res) => {
+  try {
+    const auth = req.headers['authorization'] || '';
+    const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
+    if (!token) return res.status(401).json({ error: 'NO_TOKEN' });
+
+    const primary = process.env.JWT_SECRET;
+    const secondary = process.env.JWT_SECRET_ALT;
+    if (!primary) return res.status(500).json({ error: 'SERVER_MISCONFIGURED' });
+
+    let payload;
+    try {
+      payload = jwt.verify(token, primary, { ignoreExpiration: true });
+    } catch (e1) {
+      if (!secondary) return res.status(403).json({ error: 'INVALID_TOKEN' });
+      try {
+        payload = jwt.verify(token, secondary, { ignoreExpiration: true });
+      } catch (e2) {
+        return res.status(403).json({ error: 'INVALID_TOKEN' });
+      }
+    }
+
+    // Optional: ensure user still exists (against preferred DB)
+    try {
+      const r = await queryWithFallback('SELECT id, email, username, role, coins FROM users WHERE id=$1', [payload.id || payload.userId]);
+      if (r.rowCount === 0) return res.status(404).json({ error: 'USER_NOT_FOUND' });
+      payload = { id: r.rows[0].id, email: r.rows[0].email, role: r.rows[0].role };
+    } catch {}
+
+    const newToken = jwt.sign(payload, primary, { expiresIn: process.env.JWT_EXPIRES_IN || '7d' });
+    return res.json({ token: newToken });
+  } catch (err) {
+    console.error('✗ Refresh error:', err?.message || err);
+    return res.status(500).json({ error: 'REFRESH_FAILED' });
+  }
+});
+
 // Current token inspection endpoint (unchanged)
 router.get('/me', async (req, res) => {
   try {

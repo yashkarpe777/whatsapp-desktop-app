@@ -103,7 +103,6 @@ router.post("/recover", async (req, res) => {
 // Session validation endpoint
 router.get("/validate", async (req, res) => {
   try {
-    const path = require('path').resolve;
     const sessionPath = process.env.WHATSAPP_DATA_PATH || path.join(process.cwd(), '.wwebjs_auth');
     const validation = await validateSession(sessionPath);
     res.json(validation);
@@ -114,3 +113,4 @@ router.get("/validate", async (req, res) => {
 });
 
 export default router;
+

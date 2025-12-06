@@ -33,6 +33,8 @@ const AttachmentPreview: React.FC<AttachmentPreviewProps> = ({ file, remoteFileN
   if (!src) return null;
 
   const isVideo = file ? file.type.startsWith("video") : /\.(mp4|mov|webm|mkv|m4v|avi)$/i.test(remoteFileName || "");
+  const isImage = file ? file.type.startsWith("image") : /\.(png|jpe?g|gif|bmp|webp|svg)$/i.test(remoteFileName || "");
+  const isPreviewable = isVideo || isImage;
 
   return (
     <Card className={`border-dashed ${className || ""}`}>
@@ -43,11 +45,20 @@ const AttachmentPreview: React.FC<AttachmentPreviewProps> = ({ file, remoteFileN
             <Button variant="ghost" size="sm" onClick={onRemove}>Remove</Button>
           )}
         </div>
-        <div className="rounded overflow-hidden bg-muted/30 flex items-center justify-center max-h-80">
-          {isVideo ? (
-            <video src={src} controls className="w-full h-full max-h-80" />
+        <div className="rounded overflow-hidden bg-muted/30 flex items-center justify-center max-h-80 p-3">
+          {isPreviewable ? (
+            isVideo ? (
+              <video src={src} controls className="w-full h-full max-h-80" />
+            ) : (
+              <img src={src} alt="Attachment preview" className="w-full h-full object-contain max-h-80" />
+            )
           ) : (
-            <img src={src} alt="Attachment preview" className="w-full h-full object-contain max-h-80" />
+            <div className="text-center space-y-2">
+              <div className="text-sm text-muted-foreground">Preview not available for this file type.</div>
+              <a href={src} target="_blank" rel="noreferrer">
+                <Button size="sm" variant="outline">Open / Download</Button>
+              </a>
+            </div>
           )}
         </div>
       </CardContent>

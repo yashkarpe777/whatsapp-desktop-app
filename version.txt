@@ -1,0 +1,3 @@
+Version: 1.0.1 
+Build Date: Wed 12/03/2025 18:54:04.24 
+Type: Portable 

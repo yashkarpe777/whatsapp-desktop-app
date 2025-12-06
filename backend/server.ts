@@ -34,7 +34,8 @@ app.use("/api/campaigns", campaignRoutes);
 app.use("/api/whatsapp", whatsappRoutes);
 app.use("/api/settings", settingsRoutes);
 
-const PORT = process.env.PORT || 5000;
+const 
+PORT = process.env.PORT || 5000;
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`Server running on port ${PORT}`);
 });

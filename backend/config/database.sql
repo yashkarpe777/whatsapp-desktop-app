@@ -119,7 +119,7 @@ CREATE TABLE coin_requests (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- WhatsApp sessions table
+-- WhatsApp  table
 CREATE TABLE whatsapp_sessions (
     id SERIAL PRIMARY KEY,
     user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
